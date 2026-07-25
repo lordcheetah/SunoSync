@@ -13,6 +13,12 @@
 (function () {
     'use strict';
 
+    // See background.js: Firefox's `chrome` alias is callback-based, so prefer
+    // the promise-based `browser` namespace when it exists.
+    const api = (typeof globalThis.browser !== 'undefined' && globalThis.browser.runtime)
+        ? globalThis.browser
+        : globalThis.chrome;
+
     const MSG_TYPE_TOKEN = 'SUNOSYNC_TOKEN';
     const MSG_TYPE_REFRESH = 'SUNOSYNC_REFRESH';
     const MSG_TYPE_STATUS = 'SUNOSYNC_STATUS';
@@ -25,7 +31,7 @@
     // --- 1. Inject the page-context script ---
     function injectScript() {
         const script = document.createElement('script');
-        script.src = chrome.runtime.getURL('injected.js');
+        script.src = api.runtime.getURL('injected.js');
         script.dataset.sunosyncChannel = CHANNEL;
         script.onload = function () {
             this.remove(); // Clean up the <script> tag after execution.
@@ -62,7 +68,7 @@
                 console.warn('[SunoSync] Ignoring a malformed token from the page.');
                 return;
             }
-            chrome.runtime.sendMessage({
+            api.runtime.sendMessage({
                 action: 'token_received',
                 token: data.token,
                 timestamp: data.timestamp
@@ -70,7 +76,7 @@
         }
 
         if (data.type === MSG_TYPE_STATUS) {
-            chrome.runtime.sendMessage({
+            api.runtime.sendMessage({
                 action: 'status_update',
                 status: String(data.status || ''),
                 message: String(data.message || '')
@@ -79,9 +85,9 @@
     });
 
     // --- 3. Messages FROM the background worker ---
-    chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+    api.runtime.onMessage.addListener(function (message, sender, sendResponse) {
         // Only accept instructions from our own extension.
-        if (!sender || sender.id !== chrome.runtime.id) return false;
+        if (!sender || sender.id !== api.runtime.id) return false;
 
         if (message.action === 'refresh_token') {
             window.postMessage({ type: MSG_TYPE_REFRESH, channel: CHANNEL }, PAGE_ORIGIN);

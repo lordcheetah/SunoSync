@@ -62,6 +62,17 @@ _EXCLUDES = [
     # Notebook / dev tooling
     'IPython', 'jupyter', 'jupyterlab', 'notebook', 'nbconvert', 'nbformat',
     'zmq', 'tornado', 'pytest', '_pytest', 'ruff', 'setuptools', 'pip',
+    # pkg_resources must be excluded alongside setuptools, not left behind.
+    # Excluding setuptools on its own still let PyInstaller collect a partial
+    # pkg_resources and install its pyi_rth_pkgres runtime hook, which then died
+    # at startup with "No module named 'jaraco.text'" (a setuptools-vendored
+    # dependency that the exclude had removed). Excluding it drops the hook.
+    #
+    # Nothing here needs it at runtime: the only importer is sentry_sdk.utils,
+    # inside a "< py3.8" fallback that is itself wrapped in try/except
+    # ImportError, so on Python 3.10+ the importlib.metadata path is used and
+    # pkg_resources is never touched. Verified by launching the built exe.
+    'pkg_resources',
     # Misc heavy transitive deps
     'grpc', 'google', 'boto3', 'botocore', 'selenium', 'playwright',
     'tokenizers', 'pypdfium2', 'pydantic', 'pydantic_core', 'lxml', 'primp',

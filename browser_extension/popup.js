@@ -8,6 +8,21 @@
 (function () {
     'use strict';
 
+    // See background.js: Firefox's `chrome` alias is callback-based, so prefer
+    // the promise-based `browser` namespace when it exists.
+    const api = (typeof globalThis.browser !== 'undefined' && globalThis.browser.runtime)
+        ? globalThis.browser
+        : globalThis.chrome;
+
+    // Firefox MV3 withholds host permissions until the user grants them, and
+    // permissions.request() must run from a user gesture — so it lives here in
+    // the popup rather than in the background worker.
+    const REQUIRED_ORIGINS = [
+        'https://suno.com/*',
+        'https://*.suno.com/*',
+        'http://127.0.0.1:38945/*'
+    ];
+
     const appDot = document.getElementById('app-dot');
     const appText = document.getElementById('app-text');
     const sunoDot = document.getElementById('suno-dot');
@@ -20,11 +35,30 @@
     const pairInput = document.getElementById('pair-input');
     const pairBtn = document.getElementById('pair-btn');
     const unpairBtn = document.getElementById('unpair-btn');
+    const permBox = document.getElementById('perm-box');
+    const permBtn = document.getElementById('perm-btn');
 
     let pollTimer = null;
 
+    async function requestHostPermissions() {
+        try {
+            if (await api.permissions.contains({ origins: REQUIRED_ORIGINS })) {
+                return true;
+            }
+            return await api.permissions.request({ origins: REQUIRED_ORIGINS });
+        } catch (err) {
+            console.error('[SunoSync] Permission request failed:', err);
+            return false;
+        }
+    }
+
     function updateUI(state) {
         if (!state) return;
+
+        // Firefox only. On Chrome hostPermissions is always true, so this stays
+        // hidden and the pairing flow is unchanged.
+        const needsPermission = state.hostPermissions === false;
+        permBox.classList.toggle('visible', needsPermission);
 
         // The pairing panel stays visible until a code has been stored.
         pairBox.classList.toggle('visible', !state.paired);
@@ -34,6 +68,9 @@
         if (state.appConnected) {
             appDot.className = 'dot green';
             appText.textContent = 'Connected';
+        } else if (needsPermission) {
+            appDot.className = 'dot yellow';
+            appText.textContent = 'Needs access';
         } else if (!state.paired) {
             appDot.className = 'dot yellow';
             appText.textContent = 'Not paired';
@@ -73,19 +110,45 @@
         }
     }
 
-    function send(message) {
-        return new Promise((resolve) => {
-            chrome.runtime.sendMessage(message, (response) => {
-                // Swallow "receiving end does not exist" while the worker wakes.
-                void chrome.runtime.lastError;
-                resolve(response);
-            });
-        });
+    /**
+     * Send a message to the background worker.
+     *
+     * Promise-based rather than callback-based: Firefox's browser.runtime
+     * .sendMessage does not accept a callback at all, so the previous callback
+     * form never resolved there and the popup silently rendered nothing.
+     * Chrome MV3 also returns a promise when no callback is passed.
+     */
+    async function send(message) {
+        try {
+            return await api.runtime.sendMessage(message);
+        } catch (err) {
+            // Commonly "receiving end does not exist" while the worker wakes up.
+            console.debug('[SunoSync] sendMessage failed:', err);
+            return undefined;
+        }
     }
 
     async function refreshState() {
         updateUI(await send({ action: 'get_state' }));
     }
+
+    permBtn.addEventListener('click', async () => {
+        permBtn.textContent = 'Requesting...';
+        permBtn.disabled = true;
+
+        const granted = await requestHostPermissions();
+
+        permBtn.textContent = 'Grant access';
+        permBtn.disabled = false;
+
+        if (!granted) {
+            errorBox.textContent =
+                'Access was declined. SunoSync cannot receive your token without it.';
+            errorBox.style.display = 'block';
+            return;
+        }
+        updateUI(await send({ action: 'check_app' }));
+    });
 
     pairBtn.addEventListener('click', async () => {
         const secret = pairInput.value.trim();
@@ -98,6 +161,9 @@
         pairBtn.textContent = 'Connecting...';
         pairBtn.disabled = true;
 
+        // Ask for host access first: on Firefox the bridge is unreachable
+        // without it, and this click is the user gesture the API requires.
+        await requestHostPermissions();
         const state = await send({ action: 'set_pairing_secret', secret });
 
         pairBtn.textContent = 'Save & Connect';

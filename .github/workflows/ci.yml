@@ -89,6 +89,20 @@ jobs:
           if (-not (Test-Path dist/SunoSync.exe)) { throw "dist/SunoSync.exe was not produced" }
           Get-Item dist/SunoSync.exe | Select-Object Name, Length
 
+      - name: Smoke-test the executable
+        # Building is not enough. A release once shipped that crashed in
+        # PyInstaller's runtime hooks before any app code ran, because the build
+        # succeeded and nobody ever launched the result. --selftest exercises the
+        # frozen import graph and exits without opening a window.
+        run: |
+          $p = Start-Process -FilePath dist/SunoSync.exe -ArgumentList '--selftest' -PassThru -Wait
+          if ($p.ExitCode -ne 0) {
+            Write-Host "--- debug.log ---"
+            Get-Content "$env:LOCALAPPDATA\InternetThot\SunoSync\debug.log" -Tail 60 -ErrorAction SilentlyContinue
+            throw "SunoSync.exe --selftest failed with exit code $($p.ExitCode)"
+          }
+          Write-Host "Self-test passed."
+
       - uses: actions/upload-artifact@v4
         with:
           name: SunoSync-exe

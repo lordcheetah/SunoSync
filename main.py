@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import ctypes
@@ -153,16 +154,24 @@ class SunoSyncApp(ctk.CTk):
         except Exception as e:
             print(f"Icon error: {e}")
 
-        # 3. Center Window Logic
-        width = 1100
-        height = 750
-        self.minsize(1000, 750)
+        # 3. Size and centre the window against the screen we are actually on.
+        #
+        # This used to be a hard-coded 1100x750 with minsize(1000, 750).
+        # CustomTkinter multiplies both by the display scaling factor, so at
+        # 150% DPI the window asked for 1650x1125 physical pixels and refused to
+        # shrink below 1500x1125 — larger than a 1080p screen. The result was a
+        # window whose lower portion, including sidebar entries, sat off-screen
+        # with no way to resize down.
+        width, height = self._preferred_window_size()
+        self.minsize(*self._minimum_window_size())
 
-        # Calculate Center
+        scaling = self._window_scaling()
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        center_x = int((screen_width - width) / 2)
-        center_y = int((screen_height - height) / 2)
+
+        # geometry() is given logical units but positions in physical pixels.
+        center_x = max(0, int((screen_width - width * scaling) / 2))
+        center_y = max(0, int((screen_height - height * scaling) / 2))
 
         default_geo = f"{width}x{height}+{center_x}+{center_y}"
         self.geometry(default_geo)
@@ -197,6 +206,57 @@ class SunoSyncApp(ctk.CTk):
         self.token_server = TokenServer()
         self.token_server.on_token(self._on_extension_token)
         self.token_server.start()
+
+    # --- Window sizing -----------------------------------------------------
+    # All three helpers work in *logical* units, which is what geometry() and
+    # minsize() take. CustomTkinter multiplies them by the display scaling
+    # factor, so the screen budget has to be divided by it first.
+
+    def _window_scaling(self):
+        try:
+            return float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
+        except Exception:
+            return 1.0
+
+    def _usable_screen(self):
+        """Logical width/height available, leaving room for taskbar and chrome."""
+        scaling = self._window_scaling()
+        width = int((self.winfo_screenwidth() - 80) / scaling)
+        height = int((self.winfo_screenheight() - 120) / scaling)
+        return max(width, 640), max(height, 420)
+
+    def _preferred_window_size(self):
+        """Default size, never larger than what the screen can actually show."""
+        max_width, max_height = self._usable_screen()
+        return min(1100, max_width), min(750, max_height)
+
+    def _minimum_window_size(self):
+        """Floor the user can shrink to. Must fit on small laptops."""
+        max_width, max_height = self._usable_screen()
+        return min(720, max_width), min(460, max_height)
+
+    def _clamp_geometry(self, geometry):
+        """Clamp a saved 'WxH+X+Y' string to the current screen.
+
+        Guards against restoring a geometry saved on a larger monitor, which
+        would otherwise reopen the window partly or entirely off-screen.
+        """
+        match = re.match(r"^(\d+)x(\d+)(?:\+(-?\d+)\+(-?\d+))?$", geometry or "")
+        if not match:
+            return None
+
+        max_width, max_height = self._usable_screen()
+        min_width, min_height = self._minimum_window_size()
+        width = max(min_width, min(int(match.group(1)), max_width))
+        height = max(min_height, min(int(match.group(2)), max_height))
+
+        if match.group(3) is None:
+            return f"{width}x{height}"
+
+        scaling = self._window_scaling()
+        x = max(0, min(int(match.group(3)), self.winfo_screenwidth() - int(width * scaling)))
+        y = max(0, min(int(match.group(4)), self.winfo_screenheight() - int(height * scaling)))
+        return f"{width}x{height}+{x}+{y}"
 
     def show_update_bar(self, version, url):
         """Display the update bar at the top of the app."""
@@ -492,11 +552,18 @@ class SunoSyncApp(ctk.CTk):
 
     def load_window_state(self):
         geometry = self._read_window_state().get("geometry")
-        if geometry:
-            try:
-                self.geometry(geometry)
-            except tk.TclError as e:
-                logging.warning("Ignoring invalid saved geometry %r: %s", geometry, e)
+        if not geometry:
+            return
+        clamped = self._clamp_geometry(geometry)
+        if not clamped:
+            logging.warning("Ignoring unparseable saved geometry %r", geometry)
+            return
+        if clamped != geometry:
+            logging.info("Clamped saved geometry %s to %s for this screen", geometry, clamped)
+        try:
+            self.geometry(clamped)
+        except tk.TclError as e:
+            logging.warning("Ignoring invalid saved geometry %r: %s", clamped, e)
 
     def on_close(self):
         data = self._read_window_state()
@@ -630,19 +697,86 @@ class SunoSyncApp(ctk.CTk):
             if hasattr(self, 'lyrics_panel') and hasattr(self.lyrics_panel, 'is_visible') and self.lyrics_panel.is_visible:
                 self.lyrics_panel.grid()
 
-            # Restore Size constraints
-            self.minsize(1000, 750)
+            # Restore Size constraints (screen-aware, not a fixed 1000x750).
+            self.minsize(*self._minimum_window_size())
 
             # Restore Geometry
             if hasattr(self, 'last_geometry'):
-                self.geometry(self.last_geometry)
+                self.geometry(self._clamp_geometry(self.last_geometry) or self.last_geometry)
             self.attributes("-topmost", False)
 
             self.player.set_mini_btn_icon(False)
 
 
 
+def run_selftest():
+    """Verify a built executable can start, without opening a window.
+
+    Exists because CI used to build SunoSync.exe and never run it, so a release
+    shipped that died during PyInstaller's runtime hooks before any of our code
+    ran ("No module named 'jaraco.text'"). Reaching this function at all proves
+    the runtime hooks and the whole module-level import graph survived freezing.
+
+    Communicates through the exit code rather than stdout: the exe is built with
+    console=False, so it has no console to print to. 0 = healthy.
+    """
+    problems = []
+
+    try:
+        logging.info("Self-test: SunoSync v%s", APP_VERSION)
+
+        # Bundled read-only resources must have made it into the archive.
+        for relative in ("CHANGELOG.txt", "assets/SunoSyncLogoIcon.png"):
+            path = resource_path(relative)
+            if not os.path.exists(path):
+                problems.append(f"missing bundled resource: {relative} ({path})")
+
+        # Writable data directory must be resolvable and writable.
+        cfg = ConfigManager(CONFIG_FILE)
+        probe = os.path.join(cfg.get_data_dir(), ".selftest")
+        try:
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(probe)
+        except OSError as e:
+            problems.append(f"data directory not writable: {e}")
+
+        # Exercise the pieces most likely to break when frozen.
+        from core.cache_store import CURRENT_SCHEMA_VERSION, migrate
+        from core.utils import build_safe_path, sanitize_filename
+        from services.token_server import load_or_create_secret
+        from services.updater import is_safe_download_url
+
+        if migrate({})["schema_version"] != CURRENT_SCHEMA_VERSION:
+            problems.append("cache migration returned an unexpected schema version")
+        if not sanitize_filename("test"):
+            problems.append("sanitize_filename returned nothing")
+        if not build_safe_path(cfg.get_data_dir(), "probe", ".mp3").endswith(".mp3"):
+            problems.append("build_safe_path did not preserve the extension")
+        if not load_or_create_secret():
+            problems.append("could not obtain a bridge pairing secret")
+        if is_safe_download_url("https://evil.test/x.exe"):
+            problems.append("download URL validation is not rejecting bad hosts")
+
+    except Exception:
+        logging.exception("Self-test raised")
+        return 1
+
+    if problems:
+        for problem in problems:
+            logging.error("Self-test failure: %s", problem)
+        return 1
+
+    logging.info("Self-test passed.")
+    return 0
+
+
 if __name__ == "__main__":
+    # Smoke test for CI: exercises the frozen import graph and exits without
+    # ever constructing a window. See run_selftest().
+    if "--selftest" in sys.argv:
+        sys.exit(run_selftest())
+
     # High DPI fix
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)

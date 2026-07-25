@@ -137,6 +137,17 @@
 
     .pair-box.visible { display: block; }
 
+    .perm-box {
+      background: #2d2416;
+      border: 1px solid #4a3c20;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      display: none;
+    }
+
+    .perm-box.visible { display: block; }
+
     .pair-label {
       display: block;
       font-size: 12px;
@@ -205,6 +216,15 @@
   </div>
 
   <div class="error-box" id="error-box"></div>
+
+  <div class="perm-box" id="perm-box">
+    <div class="pair-label">Access required</div>
+    <div class="pair-hint">
+      Firefox does not grant add-ons access to sites automatically. SunoSync
+      needs permission for suno.com and its local bridge.
+    </div>
+    <button class="btn btn-primary" id="perm-btn">Grant access</button>
+  </div>
 
   <div class="pair-box" id="pair-box">
     <label class="pair-label" for="pair-input">Pairing code</label>

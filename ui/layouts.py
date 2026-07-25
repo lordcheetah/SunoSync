@@ -176,6 +176,20 @@ def create_action_area(parent, app):
     return frame
 
 
+def _open_bridge_settings(app, dialog):
+    """Jump from the token dialog to Settings, where the pairing code lives."""
+    try:
+        dialog.destroy()
+    except Exception:
+        pass
+    try:
+        root = app.winfo_toplevel()
+        if hasattr(root, "show_view"):
+            root.show_view("settings")
+    except Exception:
+        pass
+
+
 def create_token_dialog(app):
     """Create and show the token acquisition dialog."""
     try:
@@ -187,37 +201,78 @@ def create_token_dialog(app):
     try:
         dialog = ctk.CTkToplevel(app)
         dialog.title("Get Token")
-        dialog.geometry("620x600")
+        dialog.geometry("640x620")
+        dialog.minsize(460, 360)
         dialog.attributes("-topmost", True)
         dialog.lift()
         dialog.focus_force()
     except Exception:
         return
 
-    ctk.CTkLabel(dialog, text="CONNECT TO SUNO", font=("Inter", 18, "bold")).pack(pady=15)
+    ctk.CTkLabel(dialog, text="CONNECT TO SUNO", font=("Inter", 18, "bold")).pack(pady=(15, 8))
 
-    # --- Option 1: Chrome Extension (Recommended) ---
-    ext_frame = ctk.CTkFrame(dialog, fg_color="#1a2332", corner_radius=10)
-    ext_frame.pack(fill="x", padx=20, pady=(0, 10))
+    # Scrollable body so the dialog stays usable on short screens. Packed at the
+    # very end, after the Submit button claims the bottom strip, so that the
+    # button can never be pushed off-screen by the content above it.
+    body = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
 
-    ctk.CTkLabel(ext_frame, text="⚡ Option 1 — Chrome Extension (Recommended)",
+    # --- Option 1: Browser extension (Recommended) ---
+    ext_frame = ctk.CTkFrame(body, fg_color="#1a2332", corner_radius=10)
+    ext_frame.pack(fill="x", padx=14, pady=(0, 10))
+
+    ctk.CTkLabel(ext_frame, text="⚡ Option 1 — Browser Extension (Recommended)",
                  font=("Inter", 13, "bold"), text_color="#10b981").pack(anchor="w", padx=12, pady=(10, 5))
 
-    ext_steps = (
-        "1. Open Chrome → navigate to chrome://extensions\n"
-        "2. Enable 'Developer mode' (top-right toggle)\n"
-        "3. Click 'Load unpacked' → select the chrome_extension folder\n"
-        "4. Log in to suno.com — token syncs automatically!"
-    )
-    ctk.CTkLabel(ext_frame, text=ext_steps, justify="left", font=("Inter", 11),
-                 text_color="#B3B3B3").pack(anchor="w", padx=12, pady=(0, 10))
+    ctk.CTkLabel(
+        ext_frame,
+        text=(
+            "Build the extension once, then load it in your browser:\n"
+            "    python scripts/build_extension.py"
+        ),
+        justify="left", font=("Consolas", 10), text_color="#94a3b8",
+    ).pack(anchor="w", padx=12, pady=(0, 8))
+
+    ctk.CTkLabel(
+        ext_frame,
+        text=(
+            "Chrome / Edge / Brave\n"
+            "1. Open chrome://extensions and enable 'Developer mode'.\n"
+            "2. 'Load unpacked' → select dist/extension-chrome\n"
+            "\n"
+            "Firefox / Zen / LibreWolf\n"
+            "1. Open about:debugging#/runtime/this-firefox\n"
+            "2. 'Load Temporary Add-on' → select\n"
+            "    dist/extension-firefox/manifest.json\n"
+            "3. Click the extension and press 'Grant access' when asked —\n"
+            "    Firefox withholds site access from add-ons by default."
+        ),
+        justify="left", font=("Inter", 11), text_color="#B3B3B3",
+    ).pack(anchor="w", padx=12, pady=(0, 8))
+
+    pair_note = ctk.CTkFrame(ext_frame, fg_color="#0f172a", corner_radius=6)
+    pair_note.pack(fill="x", padx=12, pady=(0, 10))
+    ctk.CTkLabel(
+        pair_note,
+        text=(
+            "🔑 Then pair it. Open Settings → Browser Bridge, copy the pairing\n"
+            "code, and paste it into the extension popup. SunoSync ignores tokens\n"
+            "from anything that cannot present that code."
+        ),
+        justify="left", font=("Inter", 11), text_color="#fbbf24",
+    ).pack(anchor="w", padx=10, pady=8)
+
+    ctk.CTkButton(
+        ext_frame, text="Open Settings → Browser Bridge", height=30, width=240,
+        fg_color="#334155", hover_color="#475569", font=("Inter", 11),
+        command=lambda: _open_bridge_settings(app, dialog),
+    ).pack(anchor="w", padx=12, pady=(0, 12))
 
     # --- Divider ---
-    ctk.CTkLabel(dialog, text="— OR —", font=("Inter", 11), text_color="#666").pack(pady=5)
+    ctk.CTkLabel(body, text="— OR —", font=("Inter", 11), text_color="#666").pack(pady=5)
 
     # --- Option 2: Manual (Original) ---
-    manual_frame = ctk.CTkFrame(dialog, fg_color="#1f1f2e", corner_radius=10)
-    manual_frame.pack(fill="x", padx=20, pady=(0, 10))
+    manual_frame = ctk.CTkFrame(body, fg_color="#1f1f2e", corner_radius=10)
+    manual_frame.pack(fill="x", padx=14, pady=(0, 10))
 
     ctk.CTkLabel(manual_frame, text="📋 Option 2 — Manual (Console)",
                  font=("Inter", 13, "bold"), text_color="#8B5CF6").pack(anchor="w", padx=12, pady=(10, 5))
@@ -266,5 +321,7 @@ def create_token_dialog(app):
         else:
             pass
     
+    # Reserve the bottom strip before the scrollable body claims the cavity.
     ctk.CTkButton(dialog, text="Submit Token", command=submit, height=40,
-                  fg_color="#7c3aed", hover_color="#6d28d9").pack(pady=15)
+                  fg_color="#7c3aed", hover_color="#6d28d9").pack(side="bottom", pady=15)
+    body.pack(fill="both", expand=True, padx=6)

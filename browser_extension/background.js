@@ -8,10 +8,30 @@
  * page). Only the manifest differs between the two.
  */
 
+/**
+ * Namespace shim. Firefox exposes the promise-based `browser` namespace; its
+ * `chrome` alias is callback-based, so `await chrome.storage.local.get(...)`
+ * resolves to undefined there and every await in this file silently produced
+ * garbage — which is why pairing never worked in Firefox/Zen. Chrome MV3's
+ * `chrome` namespace is already promise-based, so preferring `browser` when
+ * present gives one promise API on both.
+ */
+const api = (typeof globalThis.browser !== 'undefined' && globalThis.browser.runtime)
+    ? globalThis.browser
+    : globalThis.chrome;
+
 const TOKEN_SERVER_URL = 'http://127.0.0.1:38945';
 const AUTH_HEADER = 'X-SunoSync-Auth';
 const ALARM_NAME = 'sunosync_token_refresh';
 const POLL_ALARM_NAME = 'sunosync_app_poll';
+
+// Firefox MV3 does not grant host permissions at install time, so the bridge is
+// unreachable until the user grants them. The popup requests these on pairing.
+const REQUIRED_ORIGINS = [
+    'https://suno.com/*',
+    'https://*.suno.com/*',
+    'http://127.0.0.1:38945/*'
+];
 
 /**
  * Chrome and Firefox both clamp alarms to a 30 second floor. The previous
@@ -43,12 +63,12 @@ function saveState() {
     // minute, and writing it to extension storage left a copy on disk long
     // after it stopped being useful.
     const { lastToken, ...persistable } = state;
-    return chrome.storage.local.set({ sunosync_state: persistable });
+    return api.storage.local.set({ sunosync_state: persistable });
 }
 
 async function loadState() {
     try {
-        const result = await chrome.storage.local.get(['sunosync_state', 'pairing_secret']);
+        const result = await api.storage.local.get(['sunosync_state', 'pairing_secret']);
         if (result.sunosync_state) {
             state = { ...state, ...result.sunosync_state, lastToken: state.lastToken };
         }
@@ -60,10 +80,28 @@ async function loadState() {
 
 async function getPairingSecret() {
     try {
-        const { pairing_secret } = await chrome.storage.local.get('pairing_secret');
+        const { pairing_secret } = await api.storage.local.get('pairing_secret');
         return pairing_secret || null;
     } catch {
         return null;
+    }
+}
+
+// --- Host permissions ---
+/**
+ * Whether the extension may actually reach suno.com and the local bridge.
+ *
+ * Chrome grants `host_permissions` at install time, so this is always true
+ * there. Firefox MV3 treats them as opt-in: until the user grants them, fetch()
+ * to 127.0.0.1 fails and tabs.query() with a url filter returns nothing, with
+ * no error that distinguishes it from "the app isn't running".
+ */
+async function hasHostPermissions() {
+    try {
+        return await api.permissions.contains({ origins: REQUIRED_ORIGINS });
+    } catch {
+        // permissions API unavailable — assume the manifest grant applies.
+        return true;
     }
 }
 
@@ -155,13 +193,13 @@ function scheduleSmartRefresh(token) {
     }
 
     // Alarm as the durable backstop; survives worker suspension.
-    chrome.alarms.create(ALARM_NAME, {
+    api.alarms.create(ALARM_NAME, {
         delayInMinutes: Math.max(ALARM_FLOOR_MINUTES, refreshInSeconds / 60)
     });
 }
 
 function ensurePollAlarm() {
-    chrome.alarms.create(POLL_ALARM_NAME, { periodInMinutes: ALARM_FLOOR_MINUTES });
+    api.alarms.create(POLL_ALARM_NAME, { periodInMinutes: ALARM_FLOOR_MINUTES });
 }
 
 // --- Check if the app is running ---
@@ -211,14 +249,14 @@ function updateBadge(status) {
         error: '!'
     };
 
-    chrome.action.setBadgeBackgroundColor({ color: colors[status] || '#6b7280' });
-    chrome.action.setBadgeText({ text: texts[status] || '' });
+    api.action.setBadgeBackgroundColor({ color: colors[status] || '#6b7280' });
+    api.action.setBadgeText({ text: texts[status] || '' });
 }
 
 // --- Ask the suno.com tab for a fresh token ---
 async function requestTokenRefresh() {
     try {
-        const tabs = await chrome.tabs.query({
+        const tabs = await api.tabs.query({
             url: ['https://suno.com/*', 'https://*.suno.com/*']
         });
 
@@ -231,7 +269,7 @@ async function requestTokenRefresh() {
 
         for (const tab of tabs) {
             try {
-                await chrome.tabs.sendMessage(tab.id, { action: 'refresh_token' });
+                await api.tabs.sendMessage(tab.id, { action: 'refresh_token' });
                 return;
             } catch {
                 continue; // Content script not loaded in that tab yet.
@@ -243,10 +281,10 @@ async function requestTokenRefresh() {
 }
 
 // --- Messages ---
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+api.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Only trust messages originating from this extension's own pages and
     // content scripts, never from a web page.
-    if (!sender || sender.id !== chrome.runtime.id) {
+    if (!sender || sender.id !== api.runtime.id) {
         return false;
     }
 
@@ -269,9 +307,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.action === 'get_state') {
-        const { lastToken, ...safe } = state;
-        sendResponse(safe);
-        return false;
+        hasHostPermissions().then((granted) => {
+            const { lastToken, ...safe } = state;
+            sendResponse({ ...safe, hostPermissions: granted });
+        });
+        return true;
     }
 
     if (message.action === 'manual_refresh') {
@@ -281,21 +321,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.action === 'set_pairing_secret') {
-        chrome.storage.local.set({ pairing_secret: message.secret }).then(async () => {
+        (async () => {
+            await api.storage.local.set({ pairing_secret: message.secret });
             state.paired = Boolean(message.secret);
             state.lastError = null;
             await checkAppStatus();
+            const granted = await hasHostPermissions();
+            if (!granted) {
+                state.lastError =
+                    'Permission to reach SunoSync has not been granted. Use "Grant access" above.';
+            }
             const { lastToken, ...safe } = state;
-            sendResponse(safe);
-        });
+            sendResponse({ ...safe, hostPermissions: granted });
+        })();
         return true;
     }
 
     if (message.action === 'check_app') {
-        checkAppStatus().then(() => {
+        (async () => {
+            const granted = await hasHostPermissions();
+            if (granted) {
+                await checkAppStatus();
+            } else {
+                state.appConnected = false;
+                state.lastError =
+                    'Permission to reach SunoSync has not been granted. Use "Grant access" above.';
+                updateBadge('error');
+            }
             const { lastToken, ...safe } = state;
-            sendResponse(safe);
-        });
+            sendResponse({ ...safe, hostPermissions: granted });
+        })();
         return true;
     }
 
@@ -303,7 +358,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // --- Alarms ---
-chrome.alarms.onAlarm.addListener((alarm) => {
+api.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === ALARM_NAME) {
         requestTokenRefresh();
     } else if (alarm.name === POLL_ALARM_NAME) {
@@ -318,8 +373,8 @@ async function bootstrap() {
     checkAppStatus();
 }
 
-chrome.runtime.onInstalled.addListener(bootstrap);
-chrome.runtime.onStartup.addListener(bootstrap);
+api.runtime.onInstalled.addListener(bootstrap);
+api.runtime.onStartup.addListener(bootstrap);
 
 // MV3 workers restart on demand, so re-hydrate on every wake-up too.
 bootstrap();

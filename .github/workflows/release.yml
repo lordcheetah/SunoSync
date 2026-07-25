@@ -62,6 +62,19 @@ jobs:
       - name: Build executable
         run: pyinstaller --noconfirm SunoSync.spec
 
+      - name: Smoke-test the executable before releasing it
+        # A release must never ship a binary that has not been launched at least
+        # once. v3.0.1's first build passed every test and still died at startup.
+        run: |
+          if (-not (Test-Path dist/SunoSync.exe)) { throw "dist/SunoSync.exe was not produced" }
+          $p = Start-Process -FilePath dist/SunoSync.exe -ArgumentList '--selftest' -PassThru -Wait
+          if ($p.ExitCode -ne 0) {
+            Write-Host "--- debug.log ---"
+            Get-Content "$env:LOCALAPPDATA\InternetThot\SunoSync\debug.log" -Tail 60 -ErrorAction SilentlyContinue
+            throw "Refusing to release: SunoSync.exe --selftest exited $($p.ExitCode)"
+          }
+          Write-Host "Self-test passed."
+
       - name: Build browser extensions
         run: python scripts/build_extension.py --zip
 

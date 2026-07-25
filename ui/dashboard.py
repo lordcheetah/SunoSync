@@ -38,15 +38,21 @@ class DashboardTab(ctk.CTkFrame):
         self.library_tab = library_tab
         
         self.stat_cards = {}
-        
+
+        # Everything lives inside a scrollable body. Previously the header,
+        # stat grid and recent list were packed straight into the tab, so on a
+        # short window the lower rows were simply unreachable.
+        self.body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.body.pack(fill="both", expand=True)
+
         # 1. Header
-        self.header = ctk.CTkLabel(self, text="Producer Dashboard",
+        self.header = ctk.CTkLabel(self.body, text="Producer Dashboard",
                                    font=("Inter", 28, "bold"),
                                    text_color="#FFFFFF")
         self.header.pack(pady=(20, 10), padx=30, anchor="w")
-        
+
         # 2. Stats Grid
-        self.grid_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.grid_frame = ctk.CTkFrame(self.body, fg_color="transparent")
         self.grid_frame.pack(fill="x", padx=20, pady=10)
         self.grid_frame.grid_columnconfigure((0, 1), weight=1)
         
@@ -67,13 +73,13 @@ class DashboardTab(ctk.CTkFrame):
         self.card_genre.grid(row=1, column=1, sticky="ew", padx=10, pady=10)
         
         # 3. Recent Activity Header
-        self.recent_lbl = ctk.CTkLabel(self, text="Recently Downloaded",
+        self.recent_lbl = ctk.CTkLabel(self.body, text="Recently Downloaded",
                                        font=("Inter", 20, "bold"),
                                        text_color="#FFFFFF")
         self.recent_lbl.pack(pady=(30, 10), padx=30, anchor="w")
-        
+
         # 4. Recent List
-        self.recent_frame = ctk.CTkFrame(self, fg_color="#181818", corner_radius=12)
+        self.recent_frame = ctk.CTkFrame(self.body, fg_color="#181818", corner_radius=12)
         self.recent_frame.pack(fill="both", expand=True, padx=30, pady=(0, 30))
         
         # Initial stats
