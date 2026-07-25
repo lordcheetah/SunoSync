@@ -1,7 +1,10 @@
+import hashlib
+import logging
 import os
 import re
 import time
 import threading
+import unicodedata
 import requests
 import math
 from mutagen.id3 import ID3, APIC, TIT2, TPE1, TCON, COMM, TDRC, TYER, USLT, TXXX, error
@@ -10,6 +13,8 @@ from mutagen.wave import WAVE
 import platform
 import subprocess
 
+logger = logging.getLogger(__name__)
+
 
 def open_file(path):
     """Open file or folder with default system application."""
@@ -17,9 +22,9 @@ def open_file(path):
         if not path or not os.path.exists(path):
             print(f"Cannot open path: {path}")
             return
-            
+
         path = os.path.normpath(path)
-        
+
         if platform.system() == 'Windows':
             os.startfile(path)
         elif platform.system() == 'Darwin':  # macOS
@@ -43,17 +48,17 @@ def get_uuid_from_file(filepath):
             audio = MP3(filepath, ID3=ID3)
         else:
             return None
-        
+
         if not hasattr(audio, 'tags') or audio.tags is None:
             return None
-        
+
         # Look for SUNO_UUID in TXXX tags
         for key in audio.tags.keys():
             if key.startswith("TXXX:"):
                 tag = audio.tags[key]
                 if hasattr(tag, 'desc') and tag.desc == "SUNO_UUID":
                     return str(tag.text[0]) if tag.text else None
-        
+
         return None
     except Exception:
         return None
@@ -67,7 +72,7 @@ def build_uuid_cache(directory):
     uuid_cache = set()
     if not os.path.exists(directory):
         return uuid_cache
-    
+
     for root, dirs, files in os.walk(directory):
         for filename in files:
             if filename.lower().endswith(('.mp3', '.wav')):
@@ -75,7 +80,7 @@ def build_uuid_cache(directory):
                 uuid = get_uuid_from_file(filepath)
                 if uuid:
                     uuid_cache.add(uuid)
-    
+
     return uuid_cache
 
 
@@ -92,12 +97,12 @@ def extract_genre_from_prompt(prompt_text):
     """
     if not prompt_text or not isinstance(prompt_text, str):
         return None
-    
+
     # Clean up the text
     text = prompt_text.strip()
     if not text:
         return None
-    
+
     # Common patterns: "Dark Techno, fast tempo" or "Indie Rock with emotional vocals"
     # Take first part before common separators
     separators = [',', 'with', 'featuring', '|', '-', 'and']
@@ -105,15 +110,15 @@ def extract_genre_from_prompt(prompt_text):
         if sep in text.lower():
             text = text.split(sep)[0].strip()
             break
-    
+
     # Take first 3-4 words (up to 20 chars)
     words = text.split()[:4]
     genre = ' '.join(words)
-    
+
     # Truncate to 20 chars if needed
     if len(genre) > 20:
         genre = genre[:17] + "..."
-    
+
     return genre if genre else None
 
 
@@ -129,11 +134,11 @@ def extract_bpm_from_prompt(prompt_text):
     """
     if not prompt_text or not isinstance(prompt_text, str):
         return None
-    
+
     # Regex pattern to find "120 bpm" or "120bpm" (case-insensitive)
     pattern = r'(\d+)\s*bpm'
     match = re.search(pattern, prompt_text, re.IGNORECASE)
-    
+
     if match:
         bpm_value = match.group(1)
         # Validate BPM is in reasonable range (40-300)
@@ -143,7 +148,7 @@ def extract_bpm_from_prompt(prompt_text):
                 return str(bpm_int)
         except ValueError:
             pass
-    
+
     return None
 
 
@@ -163,7 +168,7 @@ def clean_title(title_text):
     """
     if not title_text:
         return "Untitled Track"
-    
+
     # 1. Check for list-like strings
     # If it starts with [' or [ and contains internal structure signs like control: or verse]
     if (title_text.startswith("['") or title_text.startswith("[")) and \
@@ -176,14 +181,14 @@ def clean_title(title_text):
         if genre:
             return f"Untitled ({genre})"
         return "Untitled Track"
-        
+
     # 2. Cleanup general dirt (quotes, brackets at ends)
     # e.g. "['My Song']" -> "My Song"
     if title_text.startswith("['") and title_text.endswith("']"):
         title_text = title_text[2:-2]
     elif title_text.startswith('[') and title_text.endswith(']'):
         title_text = title_text[1:-1]
-        
+
     return title_text
 
 def get_display_title(title, prompt_text=None):
@@ -201,10 +206,10 @@ def get_display_title(title, prompt_text=None):
     """
     if not title:
         return "Untitled Track"
-    
+
     # Clean the title first
     title = clean_title(title)
-        
+
     # Check if title looks like a UUID
     if is_uuid_like(title):
         if prompt_text and prompt_text.strip():
@@ -218,9 +223,9 @@ def get_display_title(title, prompt_text=None):
                 if len(display_title) > 50:
                     display_title = display_title[:47] + "..."
                 return display_title
-        
+
         return "Untitled Track"
-    
+
     return title
 
 
@@ -248,45 +253,45 @@ def read_song_metadata(filepath):
         'filesize': 0,
         'lyrics': ''
     }
-    
+
     try:
         # Get file stats
         stat = os.stat(filepath)
         result['filesize'] = stat.st_size
         result['date'] = time.strftime('%Y-%m-%d', time.localtime(stat.st_mtime))
-        
+
         # Read audio metadata
         ext = os.path.splitext(filepath)[1].lower()
         audio = None
-        
+
         if ext == '.wav':
             audio = WAVE(filepath)
         elif ext == '.mp3':
             audio = MP3(filepath, ID3=ID3)
-        
+
         if audio:
             # Duration
             if hasattr(audio, 'info') and hasattr(audio.info, 'length'):
                 result['duration'] = int(audio.info.length)
-            
+
             # Tags
             if hasattr(audio, 'tags') and audio.tags:
                 # Title
                 if 'TIT2' in audio.tags:
                     result['title'] = str(audio.tags['TIT2'].text[0])
-                
-                # Artist  
+
+                # Artist
                 if 'TPE1' in audio.tags:
                     result['artist'] = str(audio.tags['TPE1'].text[0])
 
                 # Genre
                 if 'TCON' in audio.tags:
                     result['genre'] = str(audio.tags['TCON'].text[0])
-                
+
                 # BPM
                 if 'TBPM' in audio.tags:
                     result['bpm'] = str(audio.tags['TBPM'].text[0])
-                
+
                 # Lyrics (USLT) - check all USLT frames and use the first non-empty one
                 for key in audio.tags.keys():
                     if key.startswith('USLT'):
@@ -294,16 +299,16 @@ def read_song_metadata(filepath):
                         if lyrics_text and lyrics_text.strip():
                             result['lyrics'] = lyrics_text
                             break
-                
+
                 # Fallback to filename if no title tag
                 if result['title'] == os.path.basename(filepath) and 'TIT2' not in audio.tags:
                     # Try to parse filename (remove extension and clean up)
                     name = os.path.splitext(os.path.basename(filepath))[0]
                     result['title'] = name.replace('_', ' ')
-                
+
                 # Smart parsing: Extract Genre/BPM from prompt text if missing
                 prompt_text = None
-                
+
                 # Look for prompt in TXXX tags (custom text frames)
                 for key in audio.tags.keys():
                     if key.startswith('TXXX:'):
@@ -313,7 +318,7 @@ def read_song_metadata(filepath):
                             if tag.desc.lower() in ['prompt', 'gpt_description_prompt', 'description']:
                                 prompt_text = str(tag.text[0]) if tag.text else None
                                 break
-                
+
                 # Fallback: Check COMM (comment) tags
                 if not prompt_text:
                     for key in audio.tags.keys():
@@ -322,37 +327,37 @@ def read_song_metadata(filepath):
                             if comment_text and len(comment_text) > 20:  # Likely a prompt if it's long enough
                                 prompt_text = comment_text
                                 break
-                
+
                 # Apply smart parsing if we found a prompt
                 if prompt_text:
                     # Clean up escaped newlines in prompt
                     prompt_text = prompt_text.replace('\\n', '\n')
-                    
+
                     # Store prompt for later use
                     result['prompt'] = prompt_text
-                    
+
                     # Extract Genre if missing
                     if result['genre'] == '--':
                         extracted_genre = extract_genre_from_prompt(prompt_text)
                         if extracted_genre:
                             result['genre'] = extracted_genre
-                    
+
                     # Extract BPM if missing
                     if result['bpm'] == '--':
                         extracted_bpm = extract_bpm_from_prompt(prompt_text)
                         if extracted_bpm:
                             result['bpm'] = extracted_bpm
-        
+
         # If no lyrics in metadata, check for .txt file
         if not result['lyrics'] or result['lyrics'].strip() == '':
             txt_path = os.path.splitext(filepath)[0] + ".txt"
             if os.path.exists(txt_path):
                 try:
-                    with open(txt_path, 'r', encoding='utf-8') as f:
+                    with open(txt_path, encoding='utf-8') as f:
                         result['lyrics'] = f.read()
                 except Exception:
                     pass  # Silently fail if .txt file can't be read
-        
+
         # Check for Artwork (Design Doc Item 3)
         image_path = None
         # 1. Check same name .jpg
@@ -364,19 +369,19 @@ def read_song_metadata(filepath):
             cover_path = os.path.join(os.path.dirname(filepath), "cover.jpg")
             if os.path.exists(cover_path):
                 image_path = cover_path
-        
+
         result['image_path'] = image_path
-        
+
         # Get UUID
         result['id'] = get_uuid_from_file(filepath)
-        
+
         # Fix UUID titles - apply display title logic
         result['title'] = get_display_title(result['title'], result.get('prompt'))
-    
+
     except Exception as e:
         # On any error, fallback to filename
         pass
-    
+
     return result
 
 
@@ -385,7 +390,7 @@ def save_lyrics_to_file(filepath, lyrics):
     try:
         ext = os.path.splitext(filepath)[1].lower()
         audio = None
-        
+
         if ext == '.wav':
             audio = WAVE(filepath)
             if audio.tags is None:
@@ -394,25 +399,25 @@ def save_lyrics_to_file(filepath, lyrics):
             audio = MP3(filepath, ID3=ID3)
             if audio.tags is None:
                 audio.add_tags()
-        
+
         if audio:
             # Remove existing USLT frames
             to_delete = [key for key in audio.tags.keys() if key.startswith('USLT')]
             for key in to_delete:
                 del audio.tags[key]
-            
+
             # Add new USLT frame
             # encoding=3 is UTF-8, desc='' is standard for main lyrics
             audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=lyrics))
-            
+
             if ext == '.mp3':
                 # v2.3 is most compatible with Windows/Players
                 audio.save(v2_version=3)
             else:
                 audio.save()
-                
+
             return True, "Saved successfully"
-            
+
     except Exception as e:
         print(f"Error saving lyrics to {filepath}: {e}")
         return False, str(e)
@@ -433,7 +438,7 @@ def save_metadata_to_file(filepath, metadata_dict):
     try:
         ext = os.path.splitext(filepath)[1].lower()
         audio = None
-        
+
         if ext == '.mp3':
             from mutagen.id3 import ID3, TIT2, TPE1, TCON, TBPM, USLT, TXXX
             try:
@@ -445,53 +450,53 @@ def save_metadata_to_file(filepath, metadata_dict):
             audio = WAVE(filepath)
         else:
             return False
-        
+
         if not audio:
             return False
-        
+
         # Update tags
         if ext == '.mp3':
             # Title
             if 'title' in metadata_dict and metadata_dict['title']:
                 audio['TIT2'] = TIT2(encoding=3, text=metadata_dict['title'])
-            
+
             # Artist
             if 'artist' in metadata_dict and metadata_dict['artist']:
                 audio['TPE1'] = TPE1(encoding=3, text=metadata_dict['artist'])
-            
+
             # Genre
             if 'genre' in metadata_dict and metadata_dict['genre']:
                 audio['TCON'] = TCON(encoding=3, text=metadata_dict['genre'])
-            
+
             # BPM
             if 'bpm' in metadata_dict and metadata_dict['bpm']:
                 audio['TBPM'] = TBPM(encoding=3, text=str(metadata_dict['bpm']))
-            
+
             # Prompt (store in TXXX)
             if 'prompt' in metadata_dict and metadata_dict['prompt']:
                 audio['TXXX:prompt'] = TXXX(encoding=3, desc='prompt', text=metadata_dict['prompt'])
-            
+
             # Lyrics
             if 'lyrics' in metadata_dict and metadata_dict['lyrics']:
                 audio['USLT'] = USLT(encoding=3, lang='eng', desc='', text=metadata_dict['lyrics'])
-            
+
             audio.save(filepath)
-        
+
         elif ext == '.wav':
             # WAV uses INFO tags
             if 'title' in metadata_dict and metadata_dict['title']:
                 audio['INAM'] = metadata_dict['title']
-            
+
             if 'artist' in metadata_dict and metadata_dict['artist']:
                 audio['IART'] = metadata_dict['artist']
-            
+
             if 'genre' in metadata_dict and metadata_dict['genre']:
                 audio['IGNR'] = metadata_dict['genre']
-            
+
             audio.save()
-        
+
         return True
-        
+
     except Exception as e:
         print(f"Error saving metadata to {filepath}: {e}")
         return False
@@ -525,13 +530,105 @@ def lighten_color(color, amount=0.1):
     return rgb_to_hex(tuple(max(0, min(255, int(c + (255 - c) * amount))) for c in rgb))
 
 
+# Device names that Windows reserves at every directory level. "CON.mp3" is
+# just as unusable as "CON", so the stem is what gets checked.
+WINDOWS_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+# Windows' classic MAX_PATH. Long-path support exists but is opt-in per machine,
+# so budget for the conservative limit.
+MAX_PATH_BUDGET = 250
+
+
 def sanitize_filename(name, maxlen=200):
-    safe = re.sub(FILENAME_BAD_CHARS, "_", name)
+    """Turn an arbitrary track title into a safe filename component.
+
+    Beyond stripping characters the filesystem rejects, this:
+
+    * normalises to NFC, so titles that differ only in Unicode composition do
+      not produce two files that look identical, and
+    * renames Windows reserved device names, which cannot be created at all.
+
+    Note this bounds the *component*, not the full path; use
+    :func:`build_safe_path` when joining onto a directory.
+    """
+    if not name:
+        return "untitled"
+
+    # NFC first: decomposed input can otherwise survive the character filter
+    # and still collide on case-insensitive filesystems.
+    safe = unicodedata.normalize("NFC", str(name))
+    safe = re.sub(FILENAME_BAD_CHARS, "_", safe)
+
+    # Trailing dots and spaces are silently dropped by the Win32 API, which
+    # turns "foo." and "foo" into the same file.
     safe = safe.strip(" .")
-    return safe[:maxlen] if len(safe) > maxlen else safe
+
+    if len(safe) > maxlen:
+        safe = safe[:maxlen].rstrip(" .")
+
+    if not safe:
+        return "untitled"
+
+    stem = safe.split(".")[0].upper()
+    if stem in WINDOWS_RESERVED_NAMES:
+        safe = f"_{safe}"
+
+    return safe
+
+
+def build_safe_path(directory, stem, extension, max_path=MAX_PATH_BUDGET):
+    """Join `directory`/`stem``extension`, truncating the stem to fit MAX_PATH.
+
+    ``sanitize_filename`` alone is not enough: with `organize_by_month` and
+    `organize_by_track` both enabled the app nests two extra directories, so a
+    200-character filename under a deep download folder can still exceed the
+    260-character limit and fail at open() time.
+
+    When the directory is itself so deep that nothing sensible fits, the name
+    degrades to just the digest and a warning is logged; the caller still gets
+    the shortest path this function can produce.
+    """
+    directory = os.path.abspath(directory)
+
+    # Derive the digest from the *untruncated* title. Hashing after truncation
+    # would give two 300-character titles sharing a prefix the same digest, so
+    # they would collide on the exact case this guard exists for.
+    digest = hashlib.sha1(
+        unicodedata.normalize("NFC", str(stem or "")).encode("utf-8", "replace")
+    ).hexdigest()[:8]
+
+    # Sanitise without imposing the default 200-char cap; length is handled here.
+    safe_stem = sanitize_filename(stem, maxlen=max_path)
+
+    # +1 for the path separator.
+    available = max_path - len(directory) - len(extension) - 1
+
+    if available < len(digest) + 1:
+        # The directory alone has eaten the budget. Emit the digest only; there
+        # is nothing left to trim on our side.
+        logger.warning(
+            "Download directory is too deep for MAX_PATH (%d chars): %s",
+            len(directory), directory,
+        )
+        return os.path.join(directory, digest + extension)
+
+    if len(safe_stem) > available:
+        keep = available - len(digest) - 1
+        safe_stem = f"{safe_stem[:keep].rstrip(' .')}_{digest}"
+
+    return os.path.join(directory, safe_stem + extension)
 
 
 def get_unique_filename(filename):
+    """Return `filename`, or the first free ` vN` variant of it.
+
+    Racy by nature: another writer could create the path between the check and
+    the caller's open(). Callers that must not clobber should open with 'x'.
+    """
     if not os.path.exists(filename):
         return filename
     name, extn = os.path.splitext(filename)
@@ -608,23 +705,23 @@ def embed_metadata(
             'title': True, 'artist': True, 'genre': True, 'year': True,
             'comment': True, 'lyrics': True, 'album_art': True, 'uuid': True
         }
-    
+
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         # Determine file type
         ext = os.path.splitext(audio_path)[1].lower()
         is_wav = ext == ".wav"
-        
+
         # Load audio file
         if is_wav:
             audio = WAVE(audio_path)
         else:
             audio = MP3(audio_path, ID3=ID3)
-        
+
         # Add ID3 tags if they don't exist
         if not hasattr(audio, 'tags') or audio.tags is None:
             audio.add_tags()
-        
+
         # Get image if needed
         image_bytes = None
         mime = "image/jpeg"
@@ -646,12 +743,12 @@ def embed_metadata(
             audio.tags["TYER"] = TYER(encoding=3, text=str(year))
         if metadata_options.get('comment', True) and comment:
             audio.tags["COMM"] = COMM(encoding=3, lang="eng", desc="Description", text=comment)
-        
+
         # 1. Extract Lyrics
         # Suno stores lyrics in 'prompt'. We check 'lyrics' and 'text' just in case.
         # Note: 'lyrics' variable already contains the extracted text from suno_downloader.py
         lyrics_text = lyrics
-        
+
 
         if lyrics_text and metadata_options.get('lyrics', True):
             try:
@@ -659,17 +756,17 @@ def embed_metadata(
                 to_delete = [key for key in audio.tags.keys() if key.startswith('USLT')]
                 for key in to_delete:
                     del audio.tags[key]
-                
+
                 # Add lyrics to both MP3 and WAV files
                 # For WAV files, ensure tags exist
                 if isinstance(audio, WAVE):
                     if audio.tags is None:
                         audio.add_tags()
-                
+
                 # Add USLT frame with lyrics
                 audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=lyrics_text))
                 print(f"Lyrics successfully embedded for {os.path.basename(audio_path)}")
-                
+
             except Exception as e:
                 print(f"Failed to embed lyrics: {e}")
                 import traceback
@@ -751,7 +848,7 @@ def safe_messagebox(func, *args, suppress_sound=False, **kwargs):
                     return result
             except:
                 pass
-    
+
     # If suppress_sound is False or error occurred, use normal messagebox
     return func(*args, **kwargs)
 
@@ -766,7 +863,7 @@ def create_tooltip(widget, text):
             except:
                 pass
             del widget.tooltip
-            
+
         import tkinter as tk
         tooltip = tk.Toplevel()
         tooltip.wm_overrideredirect(True)
@@ -775,7 +872,7 @@ def create_tooltip(widget, text):
                        font=("Inter", 9), padx=8, pady=4, relief="solid", borderwidth=1)
         label.pack()
         widget.tooltip = tooltip
-    
+
     def on_leave(event):
         if hasattr(widget, 'tooltip'):
             try:
@@ -783,7 +880,7 @@ def create_tooltip(widget, text):
             except:
                 pass
             del widget.tooltip
-    
+
     widget.bind("<Enter>", on_enter)
     widget.bind("<Leave>", on_leave)
     widget.bind("<ButtonPress>", on_leave)
@@ -797,14 +894,14 @@ def copy_files_to_clipboard(file_list):
     try:
         import win32clipboard
         import win32con
-        
+
         # pywin32 handles DROPFILES struct creation automatically if passed list of strings to CF_HDROP
         win32clipboard.OpenClipboard()
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardData(win32con.CF_HDROP, file_list)
         win32clipboard.CloseClipboard()
         return True
-        
+
     except ImportError:
         print("pywin32 not found. Please install it: pip install pywin32")
         return False

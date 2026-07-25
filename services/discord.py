@@ -29,8 +29,8 @@ class DiscordRPC:
             # Ensure strings are valid and at least 2 chars (Discord requirement)
             track_title = str(track_title)
             if len(track_title) < 2:
-                track_title += " " 
-                
+                track_title += " "
+
             artist_str = f"by {artist}" if artist else "Unknown Artist"
             if len(artist_str) < 2:
                 artist_str += " "
@@ -65,7 +65,7 @@ class DiscordRPC:
                 )
         except Exception as e:
             print(f"Failed to update Discord status: {e}")
-            # Do not set self.connected = False immediately on update error, 
+            # Do not set self.connected = False immediately on update error,
             # maybe it's just a payload issue.
             # But if it's a pipe error, it will fail next time too.
             if "Pipe" in str(e) or "Connection" in str(e):

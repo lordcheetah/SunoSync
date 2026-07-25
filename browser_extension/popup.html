@@ -116,6 +116,58 @@
       background: #3a3a5a;
     }
 
+    .btn-link {
+      background: transparent;
+      color: #777;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 6px;
+    }
+
+    .btn-link:hover { color: #aaa; }
+
+    .pair-box {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      display: none;
+    }
+
+    .pair-box.visible { display: block; }
+
+    .pair-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #e0e0e0;
+      margin-bottom: 4px;
+    }
+
+    .pair-hint {
+      font-size: 10px;
+      color: #888;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .pair-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      background: #0f172a;
+      color: #e0e0e0;
+      font-family: 'Consolas', monospace;
+      font-size: 12px;
+    }
+
+    .pair-input:focus {
+      outline: none;
+      border-color: #7c3aed;
+    }
+
     .footer {
       text-align: center;
       margin-top: 12px;
@@ -154,10 +206,18 @@
 
   <div class="error-box" id="error-box"></div>
 
+  <div class="pair-box" id="pair-box">
+    <label class="pair-label" for="pair-input">Pairing code</label>
+    <div class="pair-hint">Copy it from SunoSync &rarr; Settings &rarr; Browser Bridge.</div>
+    <input type="password" id="pair-input" class="pair-input" placeholder="Paste pairing code" autocomplete="off" spellcheck="false">
+    <button class="btn btn-primary" id="pair-btn">Save &amp; Connect</button>
+  </div>
+
   <button class="btn btn-primary" id="refresh-btn">Refresh Token Now</button>
   <button class="btn btn-secondary" id="check-btn">Check Connection</button>
+  <button class="btn btn-link" id="unpair-btn">Forget pairing code</button>
 
-  <div class="footer">Token auto-refreshes every 50 seconds</div>
+  <div class="footer">Token refreshes automatically before it expires</div>
 
   <script src="popup.js"></script>
 </body>

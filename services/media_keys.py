@@ -1,4 +1,3 @@
-import threading
 from pynput import keyboard
 
 class MediaKeyHandler:

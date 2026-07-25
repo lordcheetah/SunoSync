@@ -9,6 +9,7 @@ import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from ui.widgets import SongCard, LibraryRow
+from core.cache_store import load_cache, save_cache
 from core.utils import read_song_metadata
 
 logger = logging.getLogger(__name__)
@@ -168,20 +169,12 @@ class LibraryTab(ctk.CTkFrame):
             logger.debug("No folder selected, cancelled")
 
     def _load_cache(self):
-        if self.cache_file and os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    self.cache = json.load(f)
-            except Exception:
-                self.cache = {}
-                
+        # Schema detection, migration and quarantine-on-corruption live in
+        # core.cache_store so the format can evolve without wiping user data.
+        self.cache = load_cache(self.cache_file)
+
     def _save_cache(self):
-        if self.cache_file:
-             try:
-                 with open(self.cache_file, 'w', encoding='utf-8') as f:
-                     json.dump(self.cache, f)
-             except Exception:
-                 pass
+        save_cache(self.cache_file, self.cache)
 
     def refresh_library(self):
         """Scan the download folder and reload the song list."""
