@@ -79,7 +79,11 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: SunoSync ${{ github.event.inputs.tag || github.ref_name }}
           body_path: CHANGELOG.txt
-          draft: false
+          # Published as a draft so the artifacts can be checked before anyone
+          # can download them. Review the assets on the Releases page, then hit
+          # Publish. The in-app updater ignores drafts, so nothing is offered to
+          # users until you do.
+          draft: true
           prerelease: false
           files: |
             dist/SunoSync.exe
