@@ -34,13 +34,20 @@ class Sidebar(ctk.CTkFrame):
         # Thin separator under logo
         ctk.CTkFrame(self, height=1, fg_color="#333333").pack(fill="x", padx=15, pady=(0, 10))
 
-        # --- Navigation Container (Top, Expands) ---
-        self.nav_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.nav_container.pack(side="top", fill="both", expand=True, anchor="n")
-
         # --- Bottom Container (Settings, Fixed) ---
+        # Packed before the nav container so the Settings entry always keeps its
+        # strip at the bottom and can never be pushed off a short window.
         self.bottom_container = ctk.CTkFrame(self, fg_color="transparent")
         self.bottom_container.pack(side="bottom", fill="x", pady=(0, 10))
+
+        # --- Navigation Container (Top, Expands) ---
+        # Scrollable: on a short window (or with more nav items than fit) the
+        # entries used to run off the bottom edge with no way to reach them.
+        self.nav_container = ctk.CTkScrollableFrame(
+            self, fg_color="transparent", corner_radius=0,
+        )
+        self.nav_container.pack(side="top", fill="both", expand=True, anchor="n")
+        self._hide_scrollbar_until_needed(self.nav_container)
 
         # Navigation Items (Top)
         self._add_nav_item("Dashboard", "🏠", "dashboard", parent=self.nav_container)
@@ -50,6 +57,33 @@ class Sidebar(ctk.CTkFrame):
         
         # Settings (Bottom)
         self._add_nav_item("Settings", "⚙", "settings", parent=self.bottom_container)
+
+    @staticmethod
+    def _hide_scrollbar_until_needed(scrollable):
+        """Keep the nav scrollbar out of sight unless the items overflow.
+
+        CTkScrollableFrame always reserves room for its scrollbar, which eats
+        into an already narrow sidebar. Re-checking on <Configure> lets the
+        scrollbar appear only when there is genuinely something to scroll to.
+        """
+        try:
+            bar = scrollable._scrollbar
+            canvas = scrollable._parent_canvas
+        except AttributeError:
+            return  # CustomTkinter internals moved; degrade to always-on.
+
+        def sync(_event=None):
+            try:
+                first, last = canvas.yview()
+                if first <= 0.0 and last >= 1.0:
+                    bar.grid_remove()
+                else:
+                    bar.grid()
+            except Exception:
+                pass
+
+        scrollable.bind("<Configure>", sync, add="+")
+        scrollable.after(200, sync)
 
     def set_active(self, view_name):
         """Update active state of buttons — white text + purple left border + background."""
@@ -73,17 +107,29 @@ class Sidebar(ctk.CTkFrame):
         # UNLOCKED: All features available in paid EXE
         self.on_navigate(view_name)
 
+    # Row height in logical pixels. CustomTkinter scales this for the display.
+    ITEM_HEIGHT = 34
+    BUTTON_HEIGHT = 28
+
     def _add_nav_item(self, text, icon, view_name, parent=None, bottom=False):
         target = parent if parent else self
-        
-        # Container frame for indicator + button
-        # Reduced height for tighter feel (32px)
-        item_frame = ctk.CTkFrame(target, fg_color="transparent", height=32)
 
-        # Purple left border indicator
-        indicator = ctk.CTkFrame(item_frame, width=4, fg_color="transparent",
-                                 corner_radius=2)
-        indicator.pack(side="left", fill="y", padx=(0, 0), pady=4)
+        # Container frame for indicator + button.
+        #
+        # pack_propagate(False) is load-bearing. The indicator below is a
+        # CTkFrame with no height, and CustomTkinter's default frame height is
+        # 200px. With propagation on, that made every row 200px tall (312px once
+        # display scaling and padding were applied) for a 28px button, so the
+        # nav items were spread hundreds of pixels apart and ran off the bottom
+        # of the sidebar with no way to reach them.
+        item_frame = ctk.CTkFrame(target, fg_color="transparent", height=self.ITEM_HEIGHT)
+        item_frame.pack_propagate(False)
+
+        # Purple left border indicator. The explicit height is what stops the
+        # 200px default from coming back.
+        indicator = ctk.CTkFrame(item_frame, width=4, height=self.BUTTON_HEIGHT,
+                                 fg_color="transparent", corner_radius=2)
+        indicator.pack(side="left", fill="y", padx=(0, 0), pady=3)
         self.indicators[view_name] = indicator
 
         # Navigation button
@@ -94,12 +140,11 @@ class Sidebar(ctk.CTkFrame):
                             fg_color="transparent",
                             text_color="#B3B3B3",
                             hover_color="#2A2A2A",
-                            height=28,
+                            height=self.BUTTON_HEIGHT,
                             font=("Inter", 13))
 
-        btn.pack(side="left", fill="x", expand=True, padx=(3, 10))
+        btn.pack(side="left", fill="both", expand=True, padx=(3, 10), pady=3)
 
-        # Just pack normally in the target container
-        item_frame.pack(fill="x", pady=0, padx=5)
+        item_frame.pack(fill="x", pady=1, padx=5)
 
         self.buttons[view_name] = btn

@@ -70,5 +70,5 @@ SunoSyncMac/
 SunoSync-Mac/
 
 # Local build verification output
-dist_test/
-build_test/
+dist_*/
+build_*/
