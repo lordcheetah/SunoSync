@@ -103,9 +103,53 @@ class SettingsTab(ctk.CTkFrame):
         
         self._build_bridge_card()
         self._build_privacy_card()
+        self._build_about_card()
 
         self.save_btn = ctk.CTkButton(self, text="Save Settings", command=self.save_settings, width=200)
         self.save_btn.pack(pady=20)
+
+    def _build_about_card(self):
+        """Version and fork attribution.
+
+        People who download the .exe never see the README, so the fork
+        relationship and credit to the original author are surfaced in-app too.
+        """
+        import webbrowser
+
+        from core.version import APP_VERSION, GITHUB_REPO
+
+        self.about_card = CollapsibleCard(self.container, title="About", collapsed=False)
+        self.about_card.pack(fill="x", pady=10)
+
+        body = self.about_card.body
+
+        ctk.CTkLabel(
+            body, text=f"SunoSync v{APP_VERSION}", font=("Inter", 14, "bold"),
+        ).pack(anchor="w", padx=10, pady=(10, 2))
+
+        ctk.CTkLabel(
+            body,
+            text=(
+                "SunoSync was created by @InternetThot.\n"
+                f"This is the {GITHUB_REPO} fork, maintained by @lordcheetah,\n"
+                "and is not affiliated with or endorsed by the original author."
+            ),
+            text_color="gray", font=("Inter", 11), justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        links = ctk.CTkFrame(body, fg_color="transparent")
+        links.pack(anchor="w", padx=10, pady=(0, 10))
+
+        def link(text, url, color="#333"):
+            ctk.CTkButton(
+                links, text=text, width=150, height=28, fg_color=color,
+                hover_color="#444", font=("Inter", 11),
+                command=lambda: webbrowser.open(url),
+            ).pack(side="left", padx=(0, 8))
+
+        link("💜 Support the creator", "https://ko-fi.com/s/374c24251c", "#7c3aed")
+        link("Original project", "https://github.com/sunsetsacoustic/SunoSync")
+        link("This fork", f"https://github.com/{GITHUB_REPO}")
 
     def _build_bridge_card(self):
         """Pairing code for the browser extension, plus session controls."""

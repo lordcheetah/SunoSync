@@ -1,4 +1,23 @@
-# SunoSync
+# SunoSync — community fork
+
+> ### 🍴 This is a fork, not the original project
+>
+> **Original:** [sunsetsacoustic/SunoSync](https://github.com/sunsetsacoustic/SunoSync)
+> by **[@InternetThot](https://github.com/sunsetsacoustic)** — all credit for
+> creating SunoSync goes to them.
+>
+> **This fork:** [lordcheetah/SunoSync](https://github.com/lordcheetah/SunoSync),
+> maintained by [@lordcheetah](https://github.com/lordcheetah).
+>
+> This fork is **not affiliated with or endorsed by** the original author, and
+> it is not an official release channel for their work. Please do not send them
+> bug reports about builds from this repository — open an
+> [issue here](https://github.com/lordcheetah/SunoSync/issues) instead.
+>
+> **If you want the original project, go upstream.** If you want to support the
+> author, do it through their own links: [Ko-fi](https://ko-fi.com/s/374c24251c) ·
+> [Gumroad](https://justinmurray99.gumroad.com/l/rrxty) ·
+> [Discord](https://discord.gg/kZSc8sKUZR).
 
 **Your World, Your Music. Seamlessly Synced.**
 
@@ -7,12 +26,27 @@ library browser with tagging and stats, a built-in player, and a prompt vault.
 
 ![SunoSync Splash](resources/splash.png)
 
-> **About this fork.** This is [lordcheetah/SunoSync](https://github.com/lordcheetah/SunoSync),
-> forked from [sunsetsacoustic/SunoSync](https://github.com/sunsetsacoustic/SunoSync).
-> It fixes a broken build, a token-bridge vulnerability, and an updater that
-> pointed at the upstream author's release feed. See [CHANGELOG.txt](CHANGELOG.txt)
-> and [SECURITY.md](SECURITY.md). Releases from this fork are published here, on
-> this repository's [Releases page](https://github.com/lordcheetah/SunoSync/releases).
+## Why this fork exists
+
+The upstream project had a few problems that made it hard to build and unsafe to
+run. This fork fixes them:
+
+* **The build was broken.** `pyinstaller SunoSync.spec` failed on a clean clone
+  because it referenced a `CHANGELOG.txt` that was missing and git-ignored.
+* **The local token bridge accepted a session token from any website** you
+  happened to be visiting. See [SECURITY.md](SECURITY.md).
+* **The updater was driven by the upstream author's gist**, and opened whatever
+  URL it returned — so a fork inherited a release feed it did not control.
+* **Documented features that did not exist** (radio, mobile bridge) have been
+  removed from this README rather than left as promises.
+
+Full detail in [CHANGELOG.txt](CHANGELOG.txt) and [SECURITY.md](SECURITY.md).
+Builds from this fork are published on
+[this repository's Releases page](https://github.com/lordcheetah/SunoSync/releases),
+and the in-app updater only ever looks here.
+
+These fixes are offered upstream in good faith — if the original author wants
+any of them, they are welcome to take them under the same MIT license.
 
 ## Features
 
@@ -176,14 +210,24 @@ expected for unsigned PyInstaller binaries.
 
 ## Credits
 
-Originally created by **@InternetThot**
-([Ko-fi](https://ko-fi.com/s/374c24251c) ·
+**SunoSync was created by [@InternetThot](https://github.com/sunsetsacoustic)**
+at [sunsetsacoustic/SunoSync](https://github.com/sunsetsacoustic/SunoSync). The
+downloader, library, player and prompt vault — the app itself — are their work.
+This fork changes a small fraction of that and would not exist without it.
+
+**Support the original author**, not this fork:
+[Ko-fi](https://ko-fi.com/s/374c24251c) ·
 [Gumroad](https://justinmurray99.gumroad.com/l/rrxty) ·
-[Discord](https://discord.gg/kZSc8sKUZR)).
+[Buy Me a Coffee](https://buymeacoffee.com/audioalchemy) ·
+[Discord](https://discord.gg/kZSc8sKUZR)
 
-This fork is maintained by [@lordcheetah](https://github.com/lordcheetah).
+This fork is maintained by [@lordcheetah](https://github.com/lordcheetah) and is
+not affiliated with or endorsed by the original author. Issues with builds from
+*this* repository belong [here](https://github.com/lordcheetah/SunoSync/issues),
+not on the upstream tracker or their Discord.
 
-Licensed under the terms in [LICENSE](LICENSE).
+Distributed under the MIT license — see [LICENSE](LICENSE), which retains the
+original copyright notice.
 
 ---
 *SunoSync is an unofficial tool and is not affiliated with Suno AI.*

@@ -3,12 +3,29 @@
 SunoSync handles your Suno session token, so it is worth being precise about
 where that token lives, what can reach it, and what this fork changed.
 
+> **Scope.** This policy covers
+> [lordcheetah/SunoSync](https://github.com/lordcheetah/SunoSync), a fork of
+> [sunsetsacoustic/SunoSync](https://github.com/sunsetsacoustic/SunoSync) by
+> [@InternetThot](https://github.com/sunsetsacoustic). It is not affiliated with
+> or endorsed by the original author.
+>
+> Several issues described below originate in the upstream code and may still be
+> present there. They are documented here because this fork inherited and fixed
+> them — not as criticism of the original project, which is the reason this app
+> exists at all.
+
 ## Reporting a vulnerability
 
-Open a [GitHub issue](https://github.com/lordcheetah/SunoSync/issues) for
-anything non-sensitive. For something exploitable, use GitHub's private
+Report issues in **this fork** to this repository: open a
+[GitHub issue](https://github.com/lordcheetah/SunoSync/issues) for anything
+non-sensitive, or use GitHub's private
 [security advisory](https://github.com/lordcheetah/SunoSync/security/advisories/new)
-form instead of a public issue.
+form for something exploitable.
+
+If the issue also affects upstream, please report it to
+[sunsetsacoustic/SunoSync](https://github.com/sunsetsacoustic/SunoSync/issues)
+as well, so their users benefit too. Do not report bugs in *this fork's* builds
+to the original author.
 
 ## What SunoSync stores, and where
 

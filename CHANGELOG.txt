@@ -1,7 +1,13 @@
 SunoSync — Changelog
 ====================
 
-v3.0.1
+SunoSync was created by @InternetThot (https://github.com/sunsetsacoustic/SunoSync).
+This changelog covers the lordcheetah/SunoSync fork; entries from v3.0.0 down are
+inherited from the original project. The fork is not affiliated with or endorsed
+by the original author.
+
+
+v3.0.1  (lordcheetah/SunoSync fork)
 ------
 Security
   * Token bridge no longer accepts requests from arbitrary websites. The local
