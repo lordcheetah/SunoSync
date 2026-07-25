@@ -44,10 +44,12 @@ _ICON = os.path.join(SPEC_DIR, 'resources', 'icon.ico')
 # Packages SunoSync never uses. Without these, building outside a clean venv
 # lets PyInstaller follow optional-import probes (sentry_sdk tries to detect
 # every framework it can integrate with) into whatever else happens to be
-# installed system-wide. On one dev machine that pulled in torch, PySide6,
-# scipy and numpy and produced a 396 MB executable instead of ~40 MB.
+# installed system-wide. Measured on one dev machine with a shared user
+# site-packages: 396 MB unfiltered, 111 MB with this list, 25 MB from a clean
+# virtualenv containing only requirements.txt.
 #
-# Build in a clean virtualenv as well — this list is a backstop, not a substitute.
+# So: build in a clean virtualenv. This list is a backstop, not a substitute —
+# which is why CI builds from a fresh environment on every push.
 _EXCLUDES = [
     # ML / scientific stacks
     'torch', 'torchvision', 'torchaudio', 'tensorflow', 'jax', 'numpy', 'scipy',
