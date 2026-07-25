@@ -642,7 +642,74 @@ class SunoSyncApp(ctk.CTk):
 
 
 
+def run_selftest():
+    """Verify a built executable can start, without opening a window.
+
+    Exists because CI used to build SunoSync.exe and never run it, so a release
+    shipped that died during PyInstaller's runtime hooks before any of our code
+    ran ("No module named 'jaraco.text'"). Reaching this function at all proves
+    the runtime hooks and the whole module-level import graph survived freezing.
+
+    Communicates through the exit code rather than stdout: the exe is built with
+    console=False, so it has no console to print to. 0 = healthy.
+    """
+    problems = []
+
+    try:
+        logging.info("Self-test: SunoSync v%s", APP_VERSION)
+
+        # Bundled read-only resources must have made it into the archive.
+        for relative in ("CHANGELOG.txt", "assets/SunoSyncLogoIcon.png"):
+            path = resource_path(relative)
+            if not os.path.exists(path):
+                problems.append(f"missing bundled resource: {relative} ({path})")
+
+        # Writable data directory must be resolvable and writable.
+        cfg = ConfigManager(CONFIG_FILE)
+        probe = os.path.join(cfg.get_data_dir(), ".selftest")
+        try:
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(probe)
+        except OSError as e:
+            problems.append(f"data directory not writable: {e}")
+
+        # Exercise the pieces most likely to break when frozen.
+        from core.cache_store import CURRENT_SCHEMA_VERSION, migrate
+        from core.utils import build_safe_path, sanitize_filename
+        from services.token_server import load_or_create_secret
+        from services.updater import is_safe_download_url
+
+        if migrate({})["schema_version"] != CURRENT_SCHEMA_VERSION:
+            problems.append("cache migration returned an unexpected schema version")
+        if not sanitize_filename("test"):
+            problems.append("sanitize_filename returned nothing")
+        if not build_safe_path(cfg.get_data_dir(), "probe", ".mp3").endswith(".mp3"):
+            problems.append("build_safe_path did not preserve the extension")
+        if not load_or_create_secret():
+            problems.append("could not obtain a bridge pairing secret")
+        if is_safe_download_url("https://evil.test/x.exe"):
+            problems.append("download URL validation is not rejecting bad hosts")
+
+    except Exception:
+        logging.exception("Self-test raised")
+        return 1
+
+    if problems:
+        for problem in problems:
+            logging.error("Self-test failure: %s", problem)
+        return 1
+
+    logging.info("Self-test passed.")
+    return 0
+
+
 if __name__ == "__main__":
+    # Smoke test for CI: exercises the frozen import graph and exits without
+    # ever constructing a window. See run_selftest().
+    if "--selftest" in sys.argv:
+        sys.exit(run_selftest())
+
     # High DPI fix
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
