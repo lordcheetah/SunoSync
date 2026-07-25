@@ -1,0 +1,61 @@
+SunoSync — Changelog
+====================
+
+v3.0.1
+------
+Security
+  * Token bridge no longer accepts requests from arbitrary websites. The local
+    server previously sent "Access-Control-Allow-Origin: *", which let any page
+    you visited overwrite your Suno session token. Requests are now restricted
+    to browser-extension origins and must carry a pairing code.
+  * The browser extension no longer broadcasts your session token to every
+    script on the page (postMessage now targets the page origin explicitly),
+    and the content script verifies message provenance before relaying.
+  * Sentry crash reporting now scrubs tokens, cookies and auth headers before
+    sending, and can be disabled entirely from Settings.
+
+Fixed
+  * The PyInstaller build failed on a clean clone because the spec referenced a
+    CHANGELOG.txt that was both missing and git-ignored.
+  * The updater fetched its manifest from the upstream project's gist and opened
+    whatever URL it returned. It now queries this repository's GitHub Releases
+    and refuses to open anything that is not an HTTPS github.com URL.
+  * Version numbers disagreed across version.json, the updater, and the
+    changelog prompt. There is now a single source of truth in core/version.py.
+  * library_cache.json, tags.json, window_state.json and debug.log were written
+    next to the executable or into the working directory, so they silently
+    failed to save for installs under Program Files. All app data now lives in
+    the per-user application data directory.
+  * pywin32 was missing from requirements.txt, so "Copy files to clipboard"
+    never worked from a fresh install.
+  * debug.log was truncated on every launch, discarding the run that crashed.
+
+Changed
+  * The library cache now carries a schema version and migrates older files
+    forward, backing up anything it cannot read instead of discarding it.
+  * Filename sanitisation handles Windows reserved device names, normalises
+    Unicode to NFC, and budgets for the full path length rather than just the
+    filename.
+  * Dependencies are pinned to exact versions for reproducible builds.
+
+Added
+  * The extension now ships a Firefox/Zen build alongside the Chrome build.
+  * Test suite and CI: linting, tests, and a tagged release build that publishes
+    SunoSync.exe as a GitHub release asset.
+
+
+v3.0.0
+------
+  * Complete UI redesign built on CustomTkinter.
+  * Dashboard with library statistics.
+  * Prompt Vault.
+  * Lyrics panel and mini-player mode.
+
+
+v2.1.3
+------
+  * Ghost song fix.
+  * Playlist subfolders.
+  * Download progress bar.
+  * Artwork support.
+  * Cache fix.

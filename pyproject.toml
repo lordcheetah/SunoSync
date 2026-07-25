@@ -1,0 +1,56 @@
+[project]
+name = "sunosync"
+description = "Desktop downloader, library and player for your Suno AI music."
+requires-python = ">=3.10"
+dynamic = ["version"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import the app packages from the repo root without an editable install.
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:pkg_resources",
+    "ignore:.*urllib3.*:Warning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+# The UI layer predates this config and is formatted by hand; linting it now
+# would bury real findings under thousands of style diffs. Tightened per-module
+# as each view gets touched.
+exclude = ["ui", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "B",    # flake8-bugbear
+    "E722", # bare except — the single biggest source of hidden failures here
+    "UP",   # pyupgrade
+]
+ignore = [
+    "E501",  # line length is handled by the formatter, not the linter
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing debt, listed explicitly so it stays visible and so the linter
+# remains strict on everything written from here on. Each entry is a cleanup
+# task, not an endorsement:
+#
+#   E722 bare `except:`  — 41 across the codebase; these hide real failures and
+#                          are the reason several path bugs went unnoticed.
+#   E402 late imports    — main.py must configure logging before importing the
+#                          UI modules, so some imports genuinely cannot move.
+#   E701 one-line ifs    — cosmetic.
+#   W291/W293            — trailing whitespace inside legacy docstrings.
+#   B007                 — unused loop variables.
+"main.py" = ["E722", "E402", "E701", "UP004"]
+"core/downloader.py" = ["E722", "E701", "B007"]
+"core/utils.py" = ["E722", "W291", "W293", "F401", "B007", "F841"]
+"core/theme.py" = ["E722"]
+"services/discord.py" = ["E722", "F841"]
+"services/bug_reporter.py" = ["E722"]

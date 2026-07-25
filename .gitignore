@@ -43,11 +43,11 @@ config.json
 library_cache.json
 tags.json
 window_state.json
+token_bridge.json
 Suno_Downloads/
 Suno_Browser_Profile/
 *.spec.bak
 *.log
-*.txt
 
 # Build artifacts
 build/
@@ -58,6 +58,8 @@ dist/
 *.exe
 *.zip
 *.spec
+# ...but the checked-in build recipe must be tracked.
+!SunoSync.spec
 
 # Temporary files
 temp_*.html
@@ -66,3 +68,7 @@ temp_*.html
 # Duplicate/old directories
 SunoSyncMac/
 SunoSync-Mac/
+
+# Local build verification output
+dist_test/
+build_test/

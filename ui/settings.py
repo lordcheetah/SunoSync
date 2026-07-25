@@ -101,8 +101,157 @@ class SettingsTab(ctk.CTkFrame):
         ctk.CTkLabel(debug_frame, text="Save the 'debug.log' file to share with developer.", 
                      text_color="gray", font=("Inter", 11), justify="left").pack(anchor="w", padx=5, pady=(2,0))
         
+        self._build_bridge_card()
+        self._build_privacy_card()
+
         self.save_btn = ctk.CTkButton(self, text="Save Settings", command=self.save_settings, width=200)
         self.save_btn.pack(pady=20)
+
+    def _build_bridge_card(self):
+        """Pairing code for the browser extension, plus session controls."""
+        self.bridge_card = CollapsibleCard(self.container, title="Browser Bridge", collapsed=False)
+        self.bridge_card.pack(fill="x", pady=10)
+
+        body = self.bridge_card.body
+
+        ctk.CTkLabel(
+            body,
+            text=(
+                "The browser extension must present this pairing code before SunoSync\n"
+                "will accept a token from it. Paste it into the extension popup once."
+            ),
+            text_color="gray", font=("Inter", 11), justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 6))
+
+        row = ctk.CTkFrame(body, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.pairing_var = ctk.StringVar(value="•" * 32)
+        self._pairing_revealed = False
+
+        self.pairing_entry = ctk.CTkEntry(
+            row, textvariable=self.pairing_var, font=("Consolas", 12), state="readonly"
+        )
+        self.pairing_entry.pack(side="left", fill="x", expand=True)
+
+        self.reveal_btn = ctk.CTkButton(
+            row, text="Show", width=60, fg_color="#333", hover_color="#444",
+            command=self.toggle_pairing_visibility,
+        )
+        self.reveal_btn.pack(side="left", padx=(8, 0))
+
+        ctk.CTkButton(
+            row, text="Copy", width=60, fg_color="#7c3aed", hover_color="#6d28d9",
+            command=self.copy_pairing_code,
+        ).pack(side="left", padx=(8, 0))
+
+        ctk.CTkButton(
+            body, text="🔄 Regenerate pairing code", width=200,
+            fg_color="#333", hover_color="#444", command=self.regenerate_pairing_code,
+        ).pack(anchor="w", padx=10, pady=(4, 2))
+        ctk.CTkLabel(
+            body,
+            text="Invalidates the old code. You will need to re-pair the extension.",
+            text_color="gray", font=("Inter", 11), justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        ctk.CTkButton(
+            body, text="🚪 Sign out (clear stored token)", width=240,
+            fg_color="#7f1d1d", hover_color="#991b1b", command=self.clear_session,
+        ).pack(anchor="w", padx=10, pady=(4, 2))
+        ctk.CTkLabel(
+            body,
+            text="Forgets the Suno session token saved on this machine.",
+            text_color="gray", font=("Inter", 11), justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+    def _build_privacy_card(self):
+        self.privacy_card = CollapsibleCard(self.container, title="Privacy", collapsed=False)
+        self.privacy_card.pack(fill="x", pady=10)
+
+        self.crash_reporting_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            self.privacy_card.body, text="Send anonymous crash reports",
+            variable=self.crash_reporting_var,
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+
+        ctk.CTkLabel(
+            self.privacy_card.body,
+            text=(
+                "Sends the stack trace when SunoSync crashes. Tokens, cookies and\n"
+                "authorization headers are stripped before anything is transmitted.\n"
+                "Reporting is inactive unless this build was compiled with a Sentry DSN."
+            ),
+            text_color="gray", font=("Inter", 11), justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+    # --- Browser bridge actions ---
+
+    def _pairing_secret(self):
+        from services.token_server import load_or_create_secret
+        return load_or_create_secret()
+
+    def toggle_pairing_visibility(self):
+        self._pairing_revealed = not self._pairing_revealed
+        if self._pairing_revealed:
+            self.pairing_var.set(self._pairing_secret())
+            self.reveal_btn.configure(text="Hide")
+        else:
+            self.pairing_var.set("•" * 32)
+            self.reveal_btn.configure(text="Show")
+
+    def copy_pairing_code(self):
+        from tkinter import messagebox
+        try:
+            import pyperclip
+            pyperclip.copy(self._pairing_secret())
+            messagebox.showinfo(
+                "Copied",
+                "Pairing code copied.\n\nOpen the SunoSync extension in your browser "
+                "and paste it into the pairing box.",
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not copy pairing code: {e}")
+
+    def regenerate_pairing_code(self):
+        from tkinter import messagebox
+        from core.paths import get_bridge_file
+
+        if not messagebox.askyesno(
+            "Regenerate pairing code",
+            "The current code will stop working and the extension will need to be "
+            "re-paired.\n\nContinue?",
+        ):
+            return
+
+        try:
+            os.remove(get_bridge_file())
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            messagebox.showerror("Error", f"Could not reset pairing code: {e}")
+            return
+
+        new_secret = self._pairing_secret()
+        if self._pairing_revealed:
+            self.pairing_var.set(new_secret)
+
+        messagebox.showinfo(
+            "Pairing code regenerated",
+            "Restart SunoSync for the new code to take effect, then re-pair the extension.",
+        )
+
+    def clear_session(self):
+        from tkinter import messagebox
+
+        if not messagebox.askyesno(
+            "Sign out",
+            "Forget the Suno session token stored on this machine?",
+        ):
+            return
+
+        self.config_manager.clear_token()
+        messagebox.showinfo("Signed out", "The stored session token has been cleared.")
 
     def init_variables(self):
         # Variables expected by create_settings_card
@@ -157,11 +306,13 @@ class SettingsTab(ctk.CTkFrame):
 
     def export_log(self):
         from tkinter import filedialog, messagebox
-        
-        # Check if debug.log exists
-        log_file = "debug.log"
+        from core.paths import get_log_file
+
+        # Resolve through core.paths: the log lives in the user data directory,
+        # not the working directory this was previously reading from.
+        log_file = get_log_file()
         if not os.path.exists(log_file):
-            messagebox.showerror("Error", "No debug log found (debug.log missing).")
+            messagebox.showerror("Error", f"No debug log found at:\n{log_file}")
             return
             
         # timestamp for filename
@@ -201,6 +352,9 @@ class SettingsTab(ctk.CTkFrame):
         self.scan_start_var.set(c.get("start_page", 1))
         self.scan_max_var.set(c.get("max_pages", 0))
 
+        if hasattr(self, "crash_reporting_var"):
+            self.crash_reporting_var.set(c.get("crash_reporting", True))
+
     def save_settings(self):
         c = self.config_manager
         c.set("path", self.path_var.get())
@@ -217,6 +371,7 @@ class SettingsTab(ctk.CTkFrame):
         c.set("download_delay", self.scan_speed_var.get())
         c.set("start_page", self.scan_start_var.get())
         c.set("max_pages", self.scan_max_var.get())
+        c.set("crash_reporting", self.crash_reporting_var.get())
         c.save_config()
         
         # Show toast
