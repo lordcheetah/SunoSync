@@ -88,6 +88,9 @@ def main(argv=None):
     parser.add_argument("--delay", type=float, default=1.0, help="Seconds between API calls.")
     parser.add_argument("--dry-run", action="store_true", help="Report only; write nothing.")
     parser.add_argument("--no-cover", action="store_true", help="Skip cover.jpg / embedded art.")
+    parser.add_argument("--published-only", action="store_true",
+                        help="Number albums over published tracks only. Playlists often "
+                             "hold several takes of a song; publishing marks the chosen one.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -139,7 +142,8 @@ def main(argv=None):
 
     # Same disambiguation the archiver used, so albums sharing a title are
     # tagged against the folders they were actually written to.
-    plans = build_album_plans(pairs, assign_folder_names(playlists))
+    plans = build_album_plans(pairs, assign_folder_names(playlists),
+                              published_only=args.published_only)
 
     tagged = covers = playlists_written = missing = 0
 

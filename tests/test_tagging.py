@@ -194,3 +194,26 @@ def test_find_track_files_tolerates_suffixes(tmp_path):
         (tmp_path / name).write_bytes(b"x")
     found = {os.path.basename(p) for p in find_track_files(str(tmp_path), "Song")}
     assert found == {"Song.mp3", "Song.wav", "Song v2.mp3"}
+
+
+class TestPublishedOnly:
+    """Playlists hold multiple takes; publishing marks the chosen one."""
+
+    ENTRIES = [
+        {"clip": dict(clip("c1", "Take A"), is_public=True), "relative_index": 1.0},
+        {"clip": dict(clip("c2", "Take A"), is_public=False), "relative_index": 2.0},
+        {"clip": dict(clip("c3", "Song B"), is_public=True), "relative_index": 3.0},
+    ]
+
+    def test_includes_everything_by_default(self):
+        assert len(build_album_plans([(PLAYLIST, self.ENTRIES)])[0]) == 3
+
+    def test_filters_to_published(self):
+        plan = build_album_plans([(PLAYLIST, self.ENTRIES)], published_only=True)[0]
+        assert [t.title for t in plan.tracks] == ["Take A", "Song B"]
+
+    def test_renumbers_contiguously_after_filtering(self):
+        plan = build_album_plans([(PLAYLIST, self.ENTRIES)], published_only=True)[0]
+        # Numbering must be 1..N over the kept tracks, not the original indexes.
+        assert [t.track_number for t in plan.tracks] == [1, 2]
+        assert {t.total_tracks for t in plan.tracks} == {2}

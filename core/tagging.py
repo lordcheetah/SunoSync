@@ -126,7 +126,7 @@ class AlbumPlan:
         return len(self.tracks)
 
 
-def build_album_plans(playlists_with_clips, folder_names=None):
+def build_album_plans(playlists_with_clips, folder_names=None, published_only=False):
     """Build ordered album plans from (playlist, playlist_clip_entries) pairs.
 
     ``entries`` are the raw ``playlist_clips`` items, which carry both the clip
@@ -136,6 +136,11 @@ def build_album_plans(playlists_with_clips, folder_names=None):
     ``folder_names`` maps playlist id -> directory name and must come from
     ``core.archiver.assign_folder_names`` so that albums sharing a title are
     tagged against the same disambiguated folders the archiver wrote.
+
+    ``published_only`` restricts the tracklist to published clips. Playlists
+    routinely hold several takes of the same song -- one has four copies of
+    'Echoes Before Us' -- and publishing is what marks the chosen take, so an
+    album numbered over every take would be wrong.
     """
     from core.utils import sanitize_filename
 
@@ -150,6 +155,8 @@ def build_album_plans(playlists_with_clips, folder_names=None):
         for position, entry in enumerate(entries):
             clip = entry.get("clip") if isinstance(entry.get("clip"), dict) else entry
             if not isinstance(clip, dict) or not clip.get("id"):
+                continue
+            if published_only and not clip.get("is_public"):
                 continue
             index = entry.get("relative_index")
             try:

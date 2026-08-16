@@ -170,19 +170,22 @@ def assign_folder_names(playlists: list[dict]) -> dict[str, str]:
     the assignment stable across runs, so a resumed archive does not suddenly
     rename folders.
     """
+    # Grouped case-insensitively, because Windows and SMB shares are. Two
+    # playlists named 'AxIom' and 'Axiom' are distinct to Suno but resolve to
+    # one directory on disk, which would silently merge them.
     grouped: dict[str, list[dict]] = {}
     for playlist in playlists:
         name = sanitize_filename((playlist.get("name") or "").strip()) or "Untitled Playlist"
-        grouped.setdefault(name, []).append(playlist)
+        grouped.setdefault(name.casefold(), []).append(playlist)
 
     names: dict[str, str] = {}
-    for name, group in grouped.items():
-        if len(group) == 1:
-            names[group[0].get("id", "")] = name
-            continue
-        for position, playlist in enumerate(sorted(group, key=lambda p: str(p.get("id", "")))):
+    for group in grouped.values():
+        ordered = sorted(group, key=lambda p: str(p.get("id", "")))
+        for position, playlist in enumerate(ordered):
             pid = str(playlist.get("id", ""))
-            names[pid] = name if position == 0 else f"{name} [{pid[:8]}]"
+            # Each keeps its own spelling; only the duplicates gain a suffix.
+            own = sanitize_filename((playlist.get("name") or "").strip()) or "Untitled Playlist"
+            names[pid] = own if position == 0 else f"{own} [{pid[:8]}]"
     return names
 
 
