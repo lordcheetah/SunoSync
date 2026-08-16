@@ -11,6 +11,7 @@ import pytest
 from core.archiver import (
     UNSORTED_FOLDER,
     Archiver,
+    assign_folder_names,
     clip_lyrics,
     clip_title,
     cover_url,
@@ -200,3 +201,48 @@ class TestSkipExisting:
         # dry_run returns before any network call, but must not count as skipped.
         assert archiver._download_to("https://example.invalid/x", str(target)) == 0
         assert archiver.stats["skipped"] == 0
+
+
+class TestFolderNameCollisions:
+    """Playlist names are not unique; two albums must not share a folder."""
+
+    @staticmethod
+    def _playlists(*pairs):
+        return [{"id": pid, "name": name} for pid, name in pairs]
+
+    def test_unique_names_are_untouched(self):
+        names = assign_folder_names(self._playlists(("a", "Rock"), ("b", "Jazz")))
+        assert names == {"a": "Rock", "b": "Jazz"}
+
+    def test_collision_is_disambiguated(self):
+        names = assign_folder_names(
+            self._playlists(("8fdfa25b", "skepticAl humanIsm"),
+                            ("031d6ce2", "skepticAl humanIsm"))
+        )
+        assert len(set(names.values())) == 2, "both playlists mapped to one folder"
+
+    def test_lowest_id_keeps_the_plain_name(self):
+        names = assign_folder_names(
+            self._playlists(("8fdfa25b", "Album"), ("031d6ce2", "Album"))
+        )
+        assert names["031d6ce2"] == "Album"
+        assert names["8fdfa25b"] == "Album [8fdfa25b]"
+
+    def test_assignment_is_stable_regardless_of_api_order(self):
+        forward = assign_folder_names(self._playlists(("aaa", "X"), ("bbb", "X")))
+        reversed_ = assign_folder_names(self._playlists(("bbb", "X"), ("aaa", "X")))
+        assert forward == reversed_, "a resumed run would rename folders"
+
+    def test_three_way_collision(self):
+        names = assign_folder_names(
+            self._playlists(("a", "Same"), ("b", "Same"), ("c", "Same"))
+        )
+        assert len(set(names.values())) == 3
+
+    def test_names_differing_only_by_illegal_chars_still_separate(self):
+        # 'A:B' and 'A?B' both sanitise to 'A_B'.
+        names = assign_folder_names(self._playlists(("a", "A:B"), ("b", "A?B")))
+        assert len(set(names.values())) == 2
+
+    def test_blank_name_gets_a_folder(self):
+        assert assign_folder_names(self._playlists(("a", "")))["a"]

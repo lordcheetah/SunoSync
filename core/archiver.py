@@ -157,6 +157,35 @@ def extract_playlist_clips(payload: dict) -> list[dict]:
     return clips
 
 
+def assign_folder_names(playlists: list[dict]) -> dict[str, str]:
+    """Map playlist id -> a unique folder name.
+
+    Playlist names are not unique: this account has two called
+    'skepticAl humanIsm' and two called 'cArcosa carnIval'. Left alone they
+    share a directory, so two different albums merge and their track numbering
+    collides.
+
+    The lowest-id playlist of a colliding group keeps the plain name and the
+    rest get a short id suffix. Sorting by id (rather than by API order) keeps
+    the assignment stable across runs, so a resumed archive does not suddenly
+    rename folders.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for playlist in playlists:
+        name = sanitize_filename((playlist.get("name") or "").strip()) or "Untitled Playlist"
+        grouped.setdefault(name, []).append(playlist)
+
+    names: dict[str, str] = {}
+    for name, group in grouped.items():
+        if len(group) == 1:
+            names[group[0].get("id", "")] = name
+            continue
+        for position, playlist in enumerate(sorted(group, key=lambda p: str(p.get("id", "")))):
+            pid = str(playlist.get("id", ""))
+            names[pid] = name if position == 0 else f"{name} [{pid[:8]}]"
+    return names
+
+
 def plan_destinations(clip_id: str, membership: dict[str, list[str]]) -> list[str]:
     """Folder names a clip should be archived into.
 
@@ -317,17 +346,22 @@ class Archiver:
         return clips
 
     def build_membership(self, playlists):
-        """Map clip id -> [playlist names], and collect the clips themselves."""
+        """Map clip id -> [folder names], and collect the clips themselves.
+
+        Folder names are pre-disambiguated by assign_folder_names, so two
+        playlists sharing a name do not end up merged in one directory.
+        """
+        folder_names = assign_folder_names(playlists)
         membership: dict[str, list[str]] = {}
         clips_by_id: dict[str, dict] = {}
 
         for playlist in playlists:
-            name = playlist.get("name") or "Untitled Playlist"
+            folder = folder_names.get(str(playlist.get("id", ""))) or "Untitled Playlist"
             clips = self.fetch_playlist_clips(playlist)
-            logger.info("Playlist %-40s %d tracks", name[:40], len(clips))
+            logger.info("Playlist %-44s %d tracks", folder[:44], len(clips))
             for clip in clips:
                 cid = clip["id"]
-                membership.setdefault(cid, []).append(name)
+                membership.setdefault(cid, []).append(folder)
                 clips_by_id.setdefault(cid, clip)
         return membership, clips_by_id
 
