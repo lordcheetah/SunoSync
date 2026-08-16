@@ -187,13 +187,39 @@ class TestM3U:
         assert "#EXTINF:200," in render_m3u(plan, {"c1": "a.mp3"})
 
 
-def test_find_track_files_tolerates_suffixes(tmp_path):
-    from scripts.tag_archive import find_track_files
+class TestAssetDiscovery:
+    def test_finds_each_asset_type(self, tmp_path):
+        from scripts.tag_archive import find_track_assets
 
-    for name in ["Song.mp3", "Song.wav", "Song v2.mp3", "Other.mp3", "Song.jpg"]:
-        (tmp_path / name).write_bytes(b"x")
-    found = {os.path.basename(p) for p in find_track_files(str(tmp_path), "Song")}
-    assert found == {"Song.mp3", "Song.wav", "Song v2.mp3"}
+        for name in ["Song.mp3", "Song.wav", "Song.mp4", "Song.txt", "Other.mp3"]:
+            (tmp_path / name).write_bytes(b"x")
+        assets = find_track_assets(str(tmp_path), "Song")
+        assert set(assets) == {".mp3", ".wav", ".mp4", ".txt"}
+        assert os.path.basename(assets[".wav"]) == "Song.wav"
+
+    def test_does_not_claim_another_tracks_file(self, tmp_path):
+        """'Song v2.mp3' is a different track, not this one."""
+        from scripts.tag_archive import find_track_assets
+
+        for name in ["Song.mp3", "Song v2.mp3"]:
+            (tmp_path / name).write_bytes(b"x")
+        assets = find_track_assets(str(tmp_path), "Song")
+        assert os.path.basename(assets[".mp3"]) == "Song.mp3"
+
+    def test_finds_the_collision_suffixed_form(self, tmp_path):
+        from scripts.tag_archive import find_track_assets
+
+        (tmp_path / "Song [abcd1234].mp3").write_bytes(b"x")
+        assets = find_track_assets(str(tmp_path), "Song", "abcd1234-0000")
+        assert os.path.basename(assets[".mp3"]) == "Song [abcd1234].mp3"
+
+    def test_taggable_helper_returns_audio_only(self, tmp_path):
+        from scripts.tag_archive import find_track_files
+
+        for name in ["Song.mp3", "Song.wav", "Song.mp4", "Song.txt"]:
+            (tmp_path / name).write_bytes(b"x")
+        found = {os.path.basename(p) for p in find_track_files(str(tmp_path), "Song")}
+        assert found == {"Song.mp3", "Song.wav"}
 
 
 class TestPublishedOnly:
@@ -217,3 +243,93 @@ class TestPublishedOnly:
         # Numbering must be 1..N over the kept tracks, not the original indexes.
         assert [t.track_number for t in plan.tracks] == [1, 2]
         assert {t.total_tracks for t in plan.tracks} == {2}
+
+
+class TestDuration:
+    @pytest.mark.parametrize("seconds,expected", [
+        (0, "0:00"), (59, "0:59"), (60, "1:00"), (446.16, "7:26"), (3600, "60:00"),
+    ])
+    def test_formats(self, seconds, expected):
+        from core.tagging import format_duration
+        assert format_duration(seconds) == expected
+
+    @pytest.mark.parametrize("value", [None, "", "abc"])
+    def test_bad_input(self, value):
+        from core.tagging import format_duration
+        assert format_duration(value) == "0:00"
+
+
+class TestCsvExport:
+    ENTRIES = [
+        {"clip": dict(clip("c1", "First"), is_public=True), "relative_index": 1.0},
+        {"clip": dict(clip("c2", "Second"), is_public=False), "relative_index": 2.0},
+    ]
+    FILES = {
+        "c1": {".mp3": "First.mp3", ".wav": "First.wav",
+               ".mp4": "First.mp4", ".txt": "First.txt"},
+        "c2": {".mp3": "Second.mp3"},
+    }
+
+    def _rows(self):
+        from core.tagging import build_csv_rows
+        plan = build_album_plans([(PLAYLIST, self.ENTRIES)])[0]
+        return plan, build_csv_rows(plan, self.FILES, {"c1": "the words"})
+
+    def test_one_row_per_track_in_order(self):
+        _plan, rows = self._rows()
+        assert [r["track"] for r in rows] == [1, 2]
+        assert [r["title"] for r in rows] == ["First", "Second"]
+
+    def test_carries_the_upload_filenames(self):
+        _plan, rows = self._rows()
+        assert rows[0]["wav_file"] == "First.wav"
+        assert rows[0]["mp4_file"] == "First.mp4"
+
+    def test_missing_files_are_blank_not_guessed(self):
+        _plan, rows = self._rows()
+        assert rows[1]["wav_file"] == ""
+
+    def test_marks_published_state(self):
+        _plan, rows = self._rows()
+        assert [r["published"] for r in rows] == ["yes", "no"]
+
+    def test_includes_lyrics_and_duration(self):
+        _plan, rows = self._rows()
+        assert rows[0]["lyrics"] == "the words"
+        assert rows[0]["duration"] == "3:20"
+
+    def test_survives_a_csv_round_trip_with_multiline_lyrics(self):
+        import csv
+        import io
+
+        from core.tagging import CSV_COLUMNS, build_csv_rows
+        plan = build_album_plans([(PLAYLIST, self.ENTRIES)])[0]
+        rows = build_csv_rows(plan, self.FILES, {"c1": "line one\nline two,with comma"})
+
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+        parsed = list(csv.DictReader(io.StringIO(buffer.getvalue())))
+        assert parsed[0]["lyrics"] == "line one\nline two,with comma"
+        assert len(parsed) == 2
+
+    def test_album_index_flags_duplicate_published_titles(self):
+        from core.tagging import album_summary_row, build_csv_rows
+        entries = [
+            {"clip": dict(clip("c1", "Same"), is_public=True), "relative_index": 1.0},
+            {"clip": dict(clip("c2", "Same"), is_public=True), "relative_index": 2.0},
+        ]
+        plan = build_album_plans([(PLAYLIST, entries)])[0]
+        summary = album_summary_row(plan, build_csv_rows(plan, {}))
+        assert summary["published"] == 2
+        assert summary["distinct_published_titles"] == 1
+        assert summary["needs_review"] == "yes"
+
+    def test_album_index_clean_album(self):
+        from core.tagging import album_summary_row
+        plan, rows = self._rows()
+        summary = album_summary_row(plan, rows)
+        assert summary["needs_review"] == "no"
+        assert summary["album"] == "wAyfInders"

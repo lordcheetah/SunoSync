@@ -208,6 +208,38 @@ def plan_destinations(clip_id: str, membership: dict[str, list[str]]) -> list[st
     return ordered
 
 
+def assign_track_stems(all_clips: dict[str, dict],
+                       membership: dict[str, list[str]]) -> dict[str, str]:
+    """Map clip id -> filename stem, disambiguating same-titled tracks.
+
+    Two clips with the same title landing in the same folder resolve to the
+    same path. Because a download is skipped when its file already exists, the
+    second track was silently never archived -- it simply went missing, with no
+    error. Several playlists here have two published takes sharing a title.
+
+    Any clip whose title collides inside a folder gets a short id suffix, in
+    every folder it appears in, so a track's filename is the same everywhere.
+    """
+    colliding: set[str] = set()
+    per_folder: dict[str, dict[str, set[str]]] = {}
+
+    for clip_id, clip in all_clips.items():
+        stem = sanitize_filename(clip_title(clip)).casefold()
+        for folder in plan_destinations(clip_id, membership):
+            per_folder.setdefault(folder, {}).setdefault(stem, set()).add(clip_id)
+
+    for titles in per_folder.values():
+        for clip_ids in titles.values():
+            if len(clip_ids) > 1:
+                colliding.update(clip_ids)
+
+    stems = {}
+    for clip_id, clip in all_clips.items():
+        title = clip_title(clip)
+        stems[clip_id] = f"{title} [{clip_id[:8]}]" if clip_id in colliding else title
+    return stems
+
+
 def estimate_bytes(track_count: int, want_wav: bool, want_video: bool) -> int:
     per_track = ESTIMATED_BYTES["mp3"] + ESTIMATED_BYTES["jpg"] + ESTIMATED_BYTES["txt"]
     if want_wav:
@@ -435,9 +467,13 @@ class Archiver:
             time.sleep(3)
         return None
 
-    def archive_clip(self, clip, folders):
-        """Fetch every asset for one clip into the first folder, copy to the rest."""
-        title = clip_title(clip)
+    def archive_clip(self, clip, folders, stem=None):
+        """Fetch every asset for one clip into the first folder, copy to the rest.
+
+        ``stem`` overrides the filename base; pass the value from
+        assign_track_stems so same-titled tracks do not overwrite each other.
+        """
+        title = stem or clip_title(clip)
         clip_id = clip.get("id", "")
         primary = os.path.join(self.out_dir, folders[0])
 

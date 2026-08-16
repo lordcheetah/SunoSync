@@ -12,6 +12,7 @@ from core.archiver import (
     UNSORTED_FOLDER,
     Archiver,
     assign_folder_names,
+    assign_track_stems,
     clip_lyrics,
     clip_title,
     cover_url,
@@ -246,3 +247,58 @@ class TestFolderNameCollisions:
 
     def test_blank_name_gets_a_folder(self):
         assert assign_folder_names(self._playlists(("a", "")))["a"]
+
+
+class TestSameTitleCollisions:
+    """Two clips sharing a title in one folder must not share a filename."""
+
+    CLIPS = {
+        "aaaa1111-x": {"id": "aaaa1111-x", "title": "Overture"},
+        "bbbb2222-x": {"id": "bbbb2222-x", "title": "Overture"},
+        "cccc3333-x": {"id": "cccc3333-x", "title": "Finale"},
+    }
+
+    def test_colliding_titles_get_distinct_stems(self):
+        membership = {"aaaa1111-x": ["Album"], "bbbb2222-x": ["Album"]}
+        stems = assign_track_stems(
+            {k: v for k, v in self.CLIPS.items() if k in membership}, membership
+        )
+        assert stems["aaaa1111-x"] != stems["bbbb2222-x"], (
+            "same path means the second track is skipped as already downloaded"
+        )
+
+    def test_unique_titles_keep_the_plain_name(self):
+        membership = {"aaaa1111-x": ["Album"], "cccc3333-x": ["Album"]}
+        stems = assign_track_stems(
+            {k: v for k, v in self.CLIPS.items() if k in membership}, membership
+        )
+        assert stems["cccc3333-x"] == "Finale"
+
+    def test_same_title_in_different_folders_is_fine(self):
+        membership = {"aaaa1111-x": ["A"], "bbbb2222-x": ["B"]}
+        stems = assign_track_stems(
+            {k: v for k, v in self.CLIPS.items() if k in membership}, membership
+        )
+        assert stems["aaaa1111-x"] == "Overture"
+        assert stems["bbbb2222-x"] == "Overture"
+
+    def test_suffix_is_consistent_across_every_folder(self):
+        # A track must have one filename everywhere, or copies diverge.
+        membership = {"aaaa1111-x": ["A", "B"], "bbbb2222-x": ["A"]}
+        stems = assign_track_stems(
+            {k: v for k, v in self.CLIPS.items() if k in membership}, membership
+        )
+        assert "[aaaa1111]" in stems["aaaa1111-x"]
+
+    def test_collision_detection_is_case_insensitive(self):
+        clips = {
+            "a1": {"id": "a1", "title": "Overture"},
+            "b2": {"id": "b2", "title": "OVERTURE"},
+        }
+        stems = assign_track_stems(clips, {"a1": ["Album"], "b2": ["Album"]})
+        assert stems["a1"] != stems["b2"]
+
+    def test_unsorted_tracks_are_disambiguated_too(self):
+        clips = {"a1": {"id": "a1", "title": "Same"}, "b2": {"id": "b2", "title": "Same"}}
+        stems = assign_track_stems(clips, {})
+        assert stems["a1"] != stems["b2"]

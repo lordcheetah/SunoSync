@@ -25,6 +25,7 @@ can be pointed at an archive that is still being filled.
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import os
 import re
@@ -43,8 +44,12 @@ from core.archiver import (  # noqa: E402
 )
 from core.config_manager import ConfigManager  # noqa: E402
 from core.tagging import (  # noqa: E402
+    ALBUM_INDEX_COLUMNS,
+    CSV_COLUMNS,
     TAGGABLE_EXTENSIONS,
+    album_summary_row,
     build_album_plans,
+    build_csv_rows,
     render_m3u,
     tag_audio_file,
 )
@@ -60,23 +65,45 @@ def load_token(explicit=None):
     return re.sub(r"[^\x00-\x7F]+", "", token)
 
 
-def find_track_files(folder, title):
-    """Audio files in `folder` belonging to `title`.
+ASSET_EXTENSIONS = (".mp3", ".wav", ".mp4", ".txt", ".jpg")
 
-    Matches on the sanitised stem the archiver used, and tolerates the " v2"
-    suffix get_unique_filename adds on collisions.
+
+def _stem_matches(name, stem):
+    """Whether a filename stem belongs to `stem`.
+
+    Tolerates the hash suffix build_safe_path adds to over-long names. It does
+    not match a " v2" suffix: the archiver never produces one, and matching it
+    would attribute a different track's file to this one.
+    """
+    return bool(re.fullmatch(re.escape(stem) + r"(_[0-9a-f]{8})?", name))
+
+
+def find_track_assets(folder, title, clip_id=None):
+    """Map extension -> full path for every asset belonging to `title`.
+
+    `clip_id` lets this also find the "Title [id8]" form the archiver uses
+    when two tracks in a folder share a title.
     """
     if not os.path.isdir(folder):
-        return []
-    stem = sanitize_filename(title)
-    matches = []
+        return {}
+    stems = [sanitize_filename(title)]
+    if clip_id:
+        stems.append(sanitize_filename(f"{title} [{clip_id[:8]}]"))
+    assets = {}
     for entry in os.listdir(folder):
         name, extension = os.path.splitext(entry)
-        if extension.lower() not in TAGGABLE_EXTENSIONS:
+        extension = extension.lower()
+        if extension not in ASSET_EXTENSIONS:
             continue
-        if name == stem or re.fullmatch(re.escape(stem) + r"(_[0-9a-f]{8})?( v\d+)?", name):
-            matches.append(os.path.join(folder, entry))
-    return matches
+        if any(_stem_matches(name, s) for s in stems):
+            assets.setdefault(extension, os.path.join(folder, entry))
+    return assets
+
+
+def find_track_files(folder, title):
+    """Just the taggable audio files for `title`."""
+    assets = find_track_assets(folder, title)
+    return [path for ext, path in assets.items() if ext in TAGGABLE_EXTENSIONS]
 
 
 def main(argv=None):
@@ -145,7 +172,8 @@ def main(argv=None):
     plans = build_album_plans(pairs, assign_folder_names(playlists),
                               published_only=args.published_only)
 
-    tagged = covers = playlists_written = missing = 0
+    tagged = covers = playlists_written = missing = csvs = 0
+    index_rows = []
 
     for plan in plans:
         folder = os.path.join(archive, plan.folder)
@@ -175,21 +203,46 @@ def main(argv=None):
             covers += 1
 
         filenames = {}
+        files_by_clip = {}
+        lyrics_by_clip = {}
+
         for track in plan.tracks:
             track.cover_bytes = cover_bytes
-            files = find_track_files(folder, track.title)
-            if not files:
+            assets = find_track_assets(folder, track.title, track.clip_id)
+            if not assets:
                 missing += 1
                 log.debug("  missing on disk: %s", track.title)
                 continue
 
-            for path in files:
-                if path.lower().endswith(".mp3"):
-                    filenames.setdefault(track.clip_id, os.path.basename(path))
-                if args.dry_run:
-                    continue
-                if tag_audio_file(path, track, lyrics=clip_lyrics(track.clip)):
+            files_by_clip[track.clip_id] = {
+                ext: os.path.basename(path) for ext, path in assets.items()
+            }
+            lyrics = clip_lyrics(track.clip)
+            lyrics_by_clip[track.clip_id] = lyrics
+            if ".mp3" in assets:
+                filenames[track.clip_id] = os.path.basename(assets[".mp3"])
+
+            if args.dry_run:
+                continue
+            for extension, path in assets.items():
+                if extension in TAGGABLE_EXTENSIONS and tag_audio_file(path, track, lyrics=lyrics):
                     tagged += 1
+
+        if files_by_clip and not args.dry_run:
+            rows = build_csv_rows(plan, files_by_clip, lyrics_by_clip)
+            index_rows.append(album_summary_row(plan, rows))
+
+            csv_path = os.path.join(folder, f"{plan.folder}.csv")
+            try:
+                # newline="" is required or csv doubles line endings on Windows,
+                # which matters here because lyrics cells contain newlines.
+                with open(csv_path, "w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
+                    writer.writeheader()
+                    writer.writerows(rows)
+                csvs += 1
+            except OSError as exc:
+                log.warning("  could not write csv: %s", exc)
 
         if filenames and not args.dry_run:
             m3u = os.path.join(folder, f"{plan.folder}.m3u")
@@ -200,11 +253,25 @@ def main(argv=None):
             except OSError as exc:
                 log.warning("  could not write m3u: %s", exc)
 
+    # An archive-wide index, so albums needing a decision are visible at a
+    # glance rather than by opening 41 folders.
+    if index_rows and not args.dry_run:
+        index_path = os.path.join(archive, "albums.csv")
+        try:
+            with open(index_path, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=ALBUM_INDEX_COLUMNS)
+                writer.writeheader()
+                writer.writerows(sorted(index_rows, key=lambda r: r["album"].lower()))
+            log.info("Wrote album index: %s", index_path)
+        except OSError as exc:
+            log.warning("could not write album index: %s", exc)
+
     print()
     print("=" * 60)
     print(f"  Files tagged        {tagged}")
     print(f"  Album covers        {covers}")
     print(f"  M3U playlists       {playlists_written}")
+    print(f"  Album CSVs          {csvs}")
     print(f"  Tracks not on disk  {missing}")
     if args.dry_run:
         print("  (dry run - nothing written)")

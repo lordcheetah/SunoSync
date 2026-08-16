@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.archiver import (  # noqa: E402
     UNSORTED_FOLDER,
+    assign_track_stems,
     WAV_RENDER_SECONDS,
     Archiver,
     ArchiveError,
@@ -137,6 +138,10 @@ def main(argv=None):
             log.info("Dry run: nothing was downloaded.")
             return 0
 
+        # Same-titled tracks in one folder would otherwise share a path, and
+        # the second would be skipped as 'already downloaded'.
+        stems = assign_track_stems(all_clips, membership)
+
         completed = archiver.load_manifest()
         if completed:
             log.info("Resuming: %d tracks already recorded as complete.", len(completed))
@@ -152,7 +157,7 @@ def main(argv=None):
             log.info("[%d/%d] %s  ->  %s", index, total,
                      (clip.get("title") or clip_id)[:45], ", ".join(folders))
             try:
-                archiver.archive_clip(clip, folders)
+                archiver.archive_clip(clip, folders, stem=stems.get(clip_id))
                 completed.add(clip_id)
             except ArchiveError:
                 raise

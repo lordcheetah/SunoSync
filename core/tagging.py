@@ -47,13 +47,18 @@ from mutagen.id3 import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ALBUM_INDEX_COLUMNS",
+    "CSV_COLUMNS",
     "AlbumPlan",
     "TrackPlan",
+    "album_summary_row",
+    "build_album_plans",
+    "build_csv_rows",
+    "format_duration",
     "primary_genre",
     "release_year",
-    "build_album_plans",
-    "tag_audio_file",
     "render_m3u",
+    "tag_audio_file",
 ]
 
 TAGGABLE_EXTENSIONS = (".mp3", ".wav")
@@ -269,6 +274,84 @@ def tag_audio_file(path, track: TrackPlan, lyrics=None, overwrite=True):
     except Exception as exc:
         logger.warning("Could not write tags to %s: %s", path, exc)
         return False
+
+
+def format_duration(seconds):
+    """Seconds as m:ss, the form upload forms and track listings expect."""
+    try:
+        total = int(round(float(seconds or 0)))
+    except (TypeError, ValueError):
+        return "0:00"
+    return f"{total // 60}:{total % 60:02d}"
+
+
+# Ordered so the columns you retype into Bandcamp come first and the bulky
+# lyrics column sits at the end, out of the way.
+CSV_COLUMNS = [
+    "track", "title", "duration", "year", "genre",
+    "published", "wav_file", "mp3_file", "mp4_file",
+    "lyrics_file", "suno_id", "lyrics",
+]
+
+
+def build_csv_rows(plan: AlbumPlan, files_by_clip, lyrics_by_clip=None):
+    """Rows describing an album, one per track, in running order.
+
+    ``files_by_clip`` maps clip id -> {extension: filename}; missing files are
+    left blank rather than guessed at, so the sheet reflects what is actually
+    on disk.
+    """
+    lyrics_by_clip = lyrics_by_clip or {}
+    rows = []
+    for track in plan.tracks:
+        files = files_by_clip.get(track.clip_id, {})
+        metadata = track.clip.get("metadata") or {}
+        rows.append({
+            "track": track.track_number,
+            "title": track.title,
+            "duration": format_duration(metadata.get("duration")),
+            "year": release_year(track.clip),
+            "genre": primary_genre(metadata.get("tags")) or "",
+            "published": "yes" if track.clip.get("is_public") else "no",
+            "wav_file": files.get(".wav", ""),
+            "mp3_file": files.get(".mp3", ""),
+            "mp4_file": files.get(".mp4", ""),
+            "lyrics_file": files.get(".txt", ""),
+            "suno_id": track.clip_id,
+            "lyrics": lyrics_by_clip.get(track.clip_id, ""),
+        })
+    return rows
+
+
+def album_summary_row(plan: AlbumPlan, rows):
+    """One line describing a whole album, for the archive-wide index."""
+    published = sum(1 for r in rows if r["published"] == "yes")
+    distinct = len({r["title"].strip().lower() for r in rows if r["published"] == "yes"})
+    seconds = 0
+    for track in plan.tracks:
+        try:
+            seconds += float((track.clip.get("metadata") or {}).get("duration") or 0)
+        except (TypeError, ValueError):
+            pass
+    return {
+        "album": plan.name,
+        "folder": plan.folder,
+        "album_artist": plan.album_artist,
+        "tracks": len(rows),
+        "published": published,
+        "distinct_published_titles": distinct,
+        # Flags an album where two published takes share a title, which needs a
+        # human decision before it can be released.
+        "needs_review": "yes" if published != distinct else "no",
+        "total_duration": format_duration(seconds),
+        "description": plan.description,
+    }
+
+
+ALBUM_INDEX_COLUMNS = [
+    "album", "folder", "album_artist", "tracks", "published",
+    "distinct_published_titles", "needs_review", "total_duration", "description",
+]
 
 
 def render_m3u(plan: AlbumPlan, filenames):
