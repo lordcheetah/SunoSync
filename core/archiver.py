@@ -3,8 +3,10 @@
 Built for a one-off, unattended run against a deadline, so the priorities are
 different from the interactive downloader:
 
-* **Resumable.** Every asset is skipped if it already exists on disk, and a
-  manifest records finished clips. Interrupt and re-run as often as you like.
+* **Resumable.** Every asset is skipped if it already exists on disk, and the
+  manifest records *which* asset kinds each clip has, so a later run asking for
+  more (a WAV pass after a --no-wav pass) correctly picks up the difference.
+  Interrupt and re-run as often as you like.
 * **Download once, copy many.** A track in five playlists is fetched from the
   network once and copied into the other four folders. Re-downloading would
   multiply bandwidth and the risk of being rate-limited for no benefit.
@@ -48,6 +50,8 @@ WAV_FILE_URL = API_BASE + "/api/gen/{clip_id}/wav_file/"
 UNSORTED_FOLDER = "_Unsorted"
 PLAYLISTS_FOLDER = "Playlists"
 MANIFEST_NAME = "archive_manifest.json"
+# v1 recorded only that a clip was processed; v2 records which asset kinds.
+MANIFEST_SCHEMA = 2
 
 # Per-track sizes for the --dry-run estimate. Measured from real tracks rather
 # than guessed: WAV in particular came out at ~68 MB for a 7-minute piece, half
@@ -467,24 +471,48 @@ class Archiver:
             time.sleep(3)
         return None
 
+    @property
+    def wanted_kinds(self) -> set[str]:
+        """Asset kinds this run is trying to collect."""
+        kinds = {"mp3", "jpg", "txt"}
+        if self.want_wav:
+            kinds.add("wav")
+        if self.want_video:
+            kinds.add("mp4")
+        return kinds
+
     def archive_clip(self, clip, folders, stem=None):
         """Fetch every asset for one clip into the first folder, copy to the rest.
 
         ``stem`` overrides the filename base; pass the value from
         assign_track_stems so same-titled tracks do not overwrite each other.
+
+        Returns the set of asset kinds now secured for this clip, which the
+        manifest records. A kind counts as secured when its file is on disk, or
+        when the clip simply has no such asset (no video, no lyrics). WAV counts
+        only when the file exists, so a failed or throttled render is retried on
+        the next run rather than being marked done.
         """
         title = stem or clip_title(clip)
+        secured: set[str] = set()
         clip_id = clip.get("id", "")
         primary = os.path.join(self.out_dir, folders[0])
 
         assets = []
         if clip.get("audio_url"):
             assets.append((".mp3", clip["audio_url"]))
-        if self.want_video and clip.get("video_url"):
-            assets.append((".mp4", clip["video_url"]))
+        else:
+            secured.add("mp3")  # nothing to fetch
+        if self.want_video:
+            if clip.get("video_url"):
+                assets.append((".mp4", clip["video_url"]))
+            else:
+                secured.add("mp4")
         cover = cover_url(clip)
         if cover:
             assets.append((".jpg", cover))
+        else:
+            secured.add("jpg")
 
         written_paths = []
 
@@ -493,6 +521,8 @@ class Archiver:
             try:
                 self._download_to(url, path)
                 written_paths.append(path)
+                if os.path.exists(path):
+                    secured.add(extension.lstrip("."))
             except Exception as exc:
                 self.stats["failed"] += 1
                 self.failures.append(f"{title} [{extension}]: {exc}")
@@ -510,6 +540,10 @@ class Archiver:
                 except OSError as exc:
                     self.failures.append(f"{title} [lyrics]: {exc}")
             written_paths.append(path)
+            if os.path.exists(path):
+                secured.add("txt")
+        else:
+            secured.add("txt")  # this clip has no lyrics
 
         # WAV last: it is the slowest and most likely to be throttled, so the
         # cheap assets are safely on disk before we risk it.
@@ -518,6 +552,7 @@ class Archiver:
             if os.path.exists(path) and os.path.getsize(path) > 0:
                 self.stats["skipped"] += 1
                 written_paths.append(path)
+                secured.add("wav")
             elif not self.dry_run:
                 wav_url = self.request_wav_url(clip_id)
                 if wav_url:
@@ -529,6 +564,10 @@ class Archiver:
                         self.failures.append(f"{title} [.wav]: {exc}")
                 else:
                     self.failures.append(f"{title} [.wav]: conversion unavailable or timed out")
+                # Only a file on disk counts: a throttled or failed render must
+                # be retried next run, not recorded as done.
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    secured.add("wav")
 
         # Mirror into any remaining playlist folders without re-downloading.
         for folder in folders[1:]:
@@ -551,27 +590,51 @@ class Archiver:
                     self.failures.append(f"{title} -> {folder}: {exc}")
 
         self.stats["tracks"] += 1
-        return True
+        return secured
 
     # --- manifest ------------------------------------------------------
 
     def manifest_path(self):
         return os.path.join(self.out_dir, MANIFEST_NAME)
 
-    def load_manifest(self):
+    def load_manifest(self) -> dict[str, set[str]]:
+        """Return clip id -> the asset kinds already secured for it.
+
+        The original format was a flat list of "this clip was processed", which
+        said nothing about *which* assets. After a --no-wav run every clip was
+        listed, so a later WAV run found nothing pending and did nothing at all.
+        A v1 manifest is therefore treated as empty: the per-file existence
+        checks make re-walking cheap, and it self-heals on the first re-run.
+        """
         try:
             with open(self.manifest_path(), encoding="utf-8") as handle:
                 data = json.load(handle)
-            return set(data.get("completed", []))
         except (OSError, ValueError):
-            return set()
+            return {}
 
-    def save_manifest(self, completed):
+        completed = data.get("completed")
+        if isinstance(completed, dict):
+            return {
+                cid: set(kinds) for cid, kinds in completed.items()
+                if isinstance(kinds, list)
+            }
+        if isinstance(completed, list):
+            logger.info(
+                "Found an old manifest that does not record asset kinds; "
+                "re-checking every track against the files on disk."
+            )
+        return {}
+
+    def save_manifest(self, completed: dict[str, set[str]]):
         if self.dry_run:
             return
         try:
             os.makedirs(self.out_dir, exist_ok=True)
+            payload = {
+                "schema_version": MANIFEST_SCHEMA,
+                "completed": {cid: sorted(kinds) for cid, kinds in sorted(completed.items())},
+            }
             with open(self.manifest_path(), "w", encoding="utf-8") as handle:
-                json.dump({"completed": sorted(completed)}, handle, indent=1)
+                json.dump(payload, handle, indent=1)
         except OSError as exc:
             logger.warning("Could not write manifest: %s", exc)

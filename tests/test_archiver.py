@@ -4,11 +4,13 @@ Network calls are not exercised here; the pure decision-making is, because a
 mistake in it means a track is silently missing from the archive.
 """
 
+import json
 import os
 
 import pytest
 
 from core.archiver import (
+    MANIFEST_SCHEMA,
     UNSORTED_FOLDER,
     Archiver,
     assign_folder_names,
@@ -162,25 +164,60 @@ class TestEstimates:
 
 
 class TestResumeManifest:
-    def test_round_trip(self, tmp_path):
+    def test_round_trip_preserves_asset_kinds(self, tmp_path):
         archiver = Archiver("tok", str(tmp_path))
-        archiver.save_manifest({"a", "b"})
-        assert Archiver("tok", str(tmp_path)).load_manifest() == {"a", "b"}
+        archiver.save_manifest({"a": {"mp3", "jpg"}, "b": {"mp3", "wav"}})
+        loaded = Archiver("tok", str(tmp_path)).load_manifest()
+        assert loaded == {"a": {"mp3", "jpg"}, "b": {"mp3", "wav"}}
 
     def test_missing_manifest_is_empty(self, tmp_path):
-        assert Archiver("tok", str(tmp_path)).load_manifest() == set()
+        assert Archiver("tok", str(tmp_path)).load_manifest() == {}
 
     def test_corrupt_manifest_is_empty_not_fatal(self, tmp_path):
         archiver = Archiver("tok", str(tmp_path))
         os.makedirs(archiver.out_dir, exist_ok=True)
         with open(archiver.manifest_path(), "w", encoding="utf-8") as f:
             f.write("{not json")
-        assert archiver.load_manifest() == set()
+        assert archiver.load_manifest() == {}
+
+    def test_v1_manifest_does_not_block_a_later_wav_run(self, tmp_path):
+        """The regression: a flat list marked every clip done, so --no-wav
+        followed by a WAV run had nothing pending and downloaded nothing."""
+        archiver = Archiver("tok", str(tmp_path))
+        os.makedirs(archiver.out_dir, exist_ok=True)
+        with open(archiver.manifest_path(), "w", encoding="utf-8") as f:
+            json.dump({"completed": ["a", "b", "c"]}, f)
+        assert archiver.load_manifest() == {}
 
     def test_dry_run_writes_nothing(self, tmp_path):
         archiver = Archiver("tok", str(tmp_path), dry_run=True)
-        archiver.save_manifest({"a"})
+        archiver.save_manifest({"a": {"mp3"}})
         assert not os.path.exists(archiver.manifest_path())
+
+    def test_records_the_schema_version(self, tmp_path):
+        archiver = Archiver("tok", str(tmp_path))
+        archiver.save_manifest({"a": {"mp3"}})
+        with open(archiver.manifest_path(), encoding="utf-8") as f:
+            assert json.load(f)["schema_version"] == MANIFEST_SCHEMA
+
+
+class TestWantedKinds:
+    def test_includes_wav_and_video_by_default(self, tmp_path):
+        assert Archiver("t", str(tmp_path)).wanted_kinds == {"mp3", "jpg", "txt", "wav", "mp4"}
+
+    def test_no_wav_excludes_wav(self, tmp_path):
+        kinds = Archiver("t", str(tmp_path), want_wav=False).wanted_kinds
+        assert "wav" not in kinds
+
+    def test_no_video_excludes_mp4(self, tmp_path):
+        kinds = Archiver("t", str(tmp_path), want_video=False).wanted_kinds
+        assert "mp4" not in kinds
+
+    def test_a_no_wav_run_does_not_satisfy_a_wav_run(self, tmp_path):
+        """The exact condition that made the WAV pass a no-op."""
+        after_no_wav = Archiver("t", str(tmp_path), want_wav=False).wanted_kinds
+        full = Archiver("t", str(tmp_path)).wanted_kinds
+        assert not full <= after_no_wav
 
 
 class TestSkipExisting:

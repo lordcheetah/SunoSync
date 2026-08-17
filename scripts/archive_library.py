@@ -143,10 +143,15 @@ def main(argv=None):
         stems = assign_track_stems(all_clips, membership)
 
         completed = archiver.load_manifest()
+        wanted = archiver.wanted_kinds
+        # A clip is only finished when everything *this* run asks for is present.
+        # Skipping on "seen before" alone meant a WAV run after a --no-wav run
+        # had nothing to do.
+        pending = [cid for cid in all_clips if not wanted <= completed.get(cid, set())]
         if completed:
-            log.info("Resuming: %d tracks already recorded as complete.", len(completed))
-
-        pending = [cid for cid in all_clips if cid not in completed]
+            log.info("Resuming: %d of %d tracks already have %s.",
+                     len(all_clips) - len(pending), len(all_clips),
+                     "+".join(sorted(wanted)))
         if args.limit:
             pending = pending[: args.limit]
 
@@ -157,8 +162,8 @@ def main(argv=None):
             log.info("[%d/%d] %s  ->  %s", index, total,
                      (clip.get("title") or clip_id)[:45], ", ".join(folders))
             try:
-                archiver.archive_clip(clip, folders, stem=stems.get(clip_id))
-                completed.add(clip_id)
+                secured = archiver.archive_clip(clip, folders, stem=stems.get(clip_id))
+                completed[clip_id] = completed.get(clip_id, set()) | secured
             except ArchiveError:
                 raise
             except Exception as exc:
