@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import requests  # noqa: E402
 
 from core.archiver import (  # noqa: E402
+    API_BASE,
     PLAYLIST_URL,
     Archiver,
     ArchiveError,
@@ -43,11 +44,18 @@ from core.archiver import (  # noqa: E402
     clip_lyrics,
 )
 from core.config_manager import ConfigManager  # noqa: E402
+from core.synced_lyrics import (  # noqa: E402
+    group_into_lines,
+    parse_aligned_lyrics,
+    render_lrc,
+    render_srt,
+)
 from core.tagging import (  # noqa: E402
     ALBUM_INDEX_COLUMNS,
     CSV_COLUMNS,
     TAGGABLE_EXTENSIONS,
     album_summary_row,
+    clip_caption,
     build_album_plans,
     build_csv_rows,
     render_m3u,
@@ -106,6 +114,16 @@ def find_track_files(folder, title):
     return [path for ext, path in assets.items() if ext in TAGGABLE_EXTENSIONS]
 
 
+def fetch_synced_lines(api, clip_id):
+    """Word-level alignment for one clip, collapsed to display lines."""
+    try:
+        payload = api._get_json(f"{API_BASE}/api/gen/{clip_id}/aligned_lyrics/", timeout=25)
+    except Exception as exc:
+        log.debug("no alignment for %s: %s", clip_id, exc)
+        return []
+    return group_into_lines(parse_aligned_lyrics(payload))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -115,6 +133,13 @@ def main(argv=None):
     parser.add_argument("--delay", type=float, default=1.0, help="Seconds between API calls.")
     parser.add_argument("--dry-run", action="store_true", help="Report only; write nothing.")
     parser.add_argument("--no-cover", action="store_true", help="Skip cover.jpg / embedded art.")
+    parser.add_argument("--captions", action="store_true",
+                        help="Write <track>.description.txt from the song description "
+                             "written on Suno. Free: the text is already in the feed.")
+    parser.add_argument("--sync-lyrics", action="store_true",
+                        help="Write .lrc (synced lyrics for Plexamp) and .srt (YouTube "
+                             "captions) from Suno's word-level alignment. Costs one API "
+                             "call per track.")
     parser.add_argument("--published-only", action="store_true",
                         help="Number albums over published tracks only. Playlists often "
                              "hold several takes of a song; publishing marks the chosen one.")
@@ -173,6 +198,7 @@ def main(argv=None):
                               published_only=args.published_only)
 
     tagged = covers = playlists_written = missing = csvs = 0
+    captions_written = synced = 0
     index_rows = []
 
     for plan in plans:
@@ -224,6 +250,32 @@ def main(argv=None):
 
             if args.dry_run:
                 continue
+
+            if args.captions:
+                caption = clip_caption(track.clip)
+                if caption:
+                    try:
+                        base = os.path.splitext(next(iter(assets.values())))[0]
+                        with open(base + ".description.txt", "w", encoding="utf-8") as handle:
+                            handle.write(caption + "\n")
+                        captions_written += 1
+                    except OSError as exc:
+                        log.warning("  could not write description: %s", exc)
+
+            if args.sync_lyrics:
+                lines = fetch_synced_lines(api, track.clip_id)
+                if lines:
+                    base = os.path.splitext(next(iter(assets.values())))[0]
+                    try:
+                        with open(base + ".lrc", "w", encoding="utf-8") as handle:
+                            handle.write(render_lrc(lines, track.title,
+                                                    track.album_artist, track.album))
+                        with open(base + ".srt", "w", encoding="utf-8") as handle:
+                            handle.write(render_srt(lines))
+                        synced += 1
+                    except OSError as exc:
+                        log.warning("  could not write synced lyrics: %s", exc)
+
             for extension, path in assets.items():
                 if extension in TAGGABLE_EXTENSIONS and tag_audio_file(path, track, lyrics=lyrics):
                     tagged += 1
@@ -272,6 +324,10 @@ def main(argv=None):
     print(f"  Album covers        {covers}")
     print(f"  M3U playlists       {playlists_written}")
     print(f"  Album CSVs          {csvs}")
+    if args.captions:
+        print(f"  Descriptions        {captions_written}")
+    if args.sync_lyrics:
+        print(f"  Synced lyrics       {synced}  (.lrc + .srt)")
     print(f"  Tracks not on disk  {missing}")
     if args.dry_run:
         print("  (dry run - nothing written)")

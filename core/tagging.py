@@ -12,7 +12,8 @@ The useful discovery is that Suno playlists already carry album structure:
     playlist.image_url           -> album cover (distinct from per-track art)
     playlist.user_display_name   -> album artist
     playlist_clips[].relative_index -> track number
-    clip.metadata.tags           -> genre
+    clip.display_tags            -> genre (short, curated)
+    clip.caption                 -> song description
     clip.created_at              -> year
     clip.id                      -> a stable unique id, standing in for a
                                     MusicBrainz recording id
@@ -48,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ALBUM_INDEX_COLUMNS",
+    "clip_caption",
+    "clip_genre",
     "CSV_COLUMNS",
     "AlbumPlan",
     "TrackPlan",
@@ -67,6 +70,31 @@ TAGGABLE_EXTENSIONS = (".mp3", ".wav")
 # --------------------------------------------------------------------------
 # Field derivation
 # --------------------------------------------------------------------------
+
+def clip_caption(clip):
+    """The song description written on Suno, or '' when there is none.
+
+    Distinct from ``metadata.tags`` (the style prompt) and ``metadata.prompt``
+    (the lyrics). This is prose about the song -- the natural source for a
+    YouTube description or Bandcamp track note.
+    """
+    caption = clip.get("caption")
+    return caption.strip() if isinstance(caption, str) else ""
+
+
+def clip_genre(clip, limit=3):
+    """Best available genre string for a clip.
+
+    Prefers ``display_tags``, which is the short curated list Suno itself shows
+    (e.g. 'progressive rock, cinematic synth, world music'). Falls back to
+    trimming ``metadata.tags``, which is the raw style prompt and routinely runs
+    to several hundred characters.
+    """
+    display = clip.get("display_tags")
+    if isinstance(display, str) and display.strip():
+        return display.strip()[:120]
+    return primary_genre((clip.get("metadata") or {}).get("tags"), limit)
+
 
 def primary_genre(tags, limit=3):
     """Condense Suno's style prompt into something a genre field can hold.
@@ -241,7 +269,7 @@ def tag_audio_file(path, track: TrackPlan, lyrics=None, overwrite=True):
     tags.setall("TPOS", [TPOS(encoding=3, text="1/1")])
     tags.setall("TDRC", [TDRC(encoding=3, text=release_year(clip))])
 
-    genre = primary_genre(metadata.get("tags"))
+    genre = clip_genre(clip)
     if genre:
         tags.setall("TCON", [TCON(encoding=3, text=genre)])
 
@@ -290,7 +318,7 @@ def format_duration(seconds):
 CSV_COLUMNS = [
     "track", "title", "duration", "year", "genre",
     "published", "wav_file", "mp3_file", "mp4_file",
-    "lyrics_file", "suno_id", "lyrics",
+    "lyrics_file", "suno_id", "caption", "lyrics",
 ]
 
 
@@ -311,13 +339,14 @@ def build_csv_rows(plan: AlbumPlan, files_by_clip, lyrics_by_clip=None):
             "title": track.title,
             "duration": format_duration(metadata.get("duration")),
             "year": release_year(track.clip),
-            "genre": primary_genre(metadata.get("tags")) or "",
+            "genre": clip_genre(track.clip) or "",
             "published": "yes" if track.clip.get("is_public") else "no",
             "wav_file": files.get(".wav", ""),
             "mp3_file": files.get(".mp3", ""),
             "mp4_file": files.get(".mp4", ""),
             "lyrics_file": files.get(".txt", ""),
             "suno_id": track.clip_id,
+            "caption": clip_caption(track.clip),
             "lyrics": lyrics_by_clip.get(track.clip_id, ""),
         })
     return rows
