@@ -95,6 +95,8 @@ def main(argv=None):
         delay=args.delay,
         dry_run=args.dry_run,
         wav_timeout=args.wav_timeout,
+        # Lets a multi-hour run pick up the token the extension refreshes.
+        token_provider=lambda: load_token(args.token),
     )
 
     try:

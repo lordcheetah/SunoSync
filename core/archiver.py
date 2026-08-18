@@ -267,8 +267,13 @@ def human_bytes(count: float) -> str:
 
 class Archiver:
     def __init__(self, token, out_dir, *, want_wav=True, want_video=True,
-                 delay=1.0, session=None, dry_run=False, wav_timeout=120):
+                 delay=1.0, session=None, dry_run=False, wav_timeout=120,
+                 token_provider=None):
         self.token = token
+        # Suno session tokens live about a minute and are refreshed into
+        # SunoSync's config by the browser extension. A multi-hour run must
+        # therefore be able to re-read the token, or it dies partway through.
+        self._token_provider = token_provider
         self.out_dir = os.path.abspath(out_dir)
         self.want_wav = want_wav
         self.want_video = want_video
@@ -293,6 +298,21 @@ class Archiver:
             "User-Agent": "SunoSync-Archiver/1.0",
         }
 
+    def refresh_token(self):
+        """Re-read the session token. Returns True when a new one was found."""
+        if self._token_provider is None:
+            return False
+        try:
+            fresh = (self._token_provider() or "").strip()
+        except Exception:
+            logger.debug("Token provider failed", exc_info=True)
+            return False
+        if fresh and fresh != self.token:
+            self.token = fresh
+            logger.info("Picked up a refreshed session token; continuing.")
+            return True
+        return False
+
     def _throttle(self):
         """Keep a floor between API calls so the sweep stays polite."""
         if self.delay <= 0:
@@ -302,10 +322,12 @@ class Archiver:
             time.sleep(self.delay - elapsed)
         self._last_request = time.monotonic()
 
-    def _get_json(self, url, timeout=30):
+    def _get_json(self, url, timeout=30, _retried=False):
         self._throttle()
         response = self.session.get(url, headers=self.headers, timeout=timeout)
         if response.status_code == 401:
+            if not _retried and self.refresh_token():
+                return self._get_json(url, timeout, _retried=True)
             raise ArchiveError(
                 "Suno rejected the token (401). Open SunoSync, let the extension "
                 "refresh your session, then re-run."
@@ -444,31 +466,78 @@ class Archiver:
             raise
 
     def request_wav_url(self, clip_id):
-        """Ask Suno to render a WAV, then wait for it. None if unavailable."""
+        """Ask Suno to render a WAV, then wait for it. None if unavailable.
+
+        Renders are ephemeral -- a WAV fetched last week is gone today -- so the
+        conversion must be requested fresh every time.
+
+        Auth failures abort the whole run rather than being absorbed. Previously
+        a 401 fell through to the poll loop, which spent the full timeout seeing
+        401s and then reported "conversion unavailable or timed out". With an
+        expired token that is 2 minutes wasted per track, and 607 tracks spent
+        about 20 hours producing nothing but a misleading error.
+        """
         self._throttle()
         try:
             response = self.session.post(
                 CONVERT_WAV_URL.format(clip_id=clip_id), headers=self.headers, timeout=20
             )
-            if response.status_code not in (200, 201, 202, 409):
-                logger.debug("convert_wav returned %s for %s", response.status_code, clip_id)
         except requests.RequestException as exc:
             logger.debug("convert_wav failed for %s: %s", clip_id, exc)
+            return None
 
+        if response.status_code in (401, 403):
+            if not self.refresh_token():
+                raise ArchiveError(
+                    "Suno rejected the token while converting WAV (HTTP "
+                    f"{response.status_code}). Session tokens expire in about a "
+                    "minute, so a long run needs SunoSync open with the browser "
+                    "extension syncing. Re-run once it is; finished tracks are kept."
+                )
+            self._throttle()
+            response = self.session.post(
+                CONVERT_WAV_URL.format(clip_id=clip_id), headers=self.headers, timeout=20
+            )
+        if response.status_code == 429:
+            raise ArchiveError(
+                "Suno is rate-limiting WAV conversion (429). Wait a while and "
+                "re-run -- the archive resumes where it stopped."
+            )
+        if response.status_code not in (200, 201, 202, 204, 409):
+            logger.debug("convert_wav returned %s for %s", response.status_code, clip_id)
+
+        # Observed: the render lands within about 1-7 seconds and the response
+        # is {} until it does, then {"wav_file_url": "..."}.
         deadline = time.monotonic() + self.wav_timeout
+        last_status = None
         while time.monotonic() < deadline:
             try:
                 self._throttle()
-                response = self.session.get(
+                poll = self.session.get(
                     WAV_FILE_URL.format(clip_id=clip_id), headers=self.headers, timeout=20
                 )
-                if response.status_code == 200:
-                    url = find_wav_url(response.json())
+                last_status = poll.status_code
+                if poll.status_code == 200:
+                    url = find_wav_url(poll.json())
                     if url:
                         return url
+                elif poll.status_code in (401, 403):
+                    if not self.refresh_token():
+                        raise ArchiveError(
+                            "Suno rejected the token while polling for WAV (HTTP "
+                            f"{poll.status_code}). Re-run with SunoSync open so the "
+                            "extension can keep the session fresh."
+                        )
+                elif poll.status_code == 429:
+                    raise ArchiveError(
+                        "Suno is rate-limiting WAV conversion (429). Wait and re-run."
+                    )
             except (requests.RequestException, ValueError) as exc:
                 logger.debug("wav poll failed for %s: %s", clip_id, exc)
             time.sleep(3)
+
+        self._last_wav_status = last_status
+        logger.debug("wav render never appeared for %s (last status %s)", clip_id, last_status)
         return None
 
     @property
@@ -563,7 +632,10 @@ class Archiver:
                         self.stats["failed"] += 1
                         self.failures.append(f"{title} [.wav]: {exc}")
                 else:
-                    self.failures.append(f"{title} [.wav]: conversion unavailable or timed out")
+                    status = getattr(self, "_last_wav_status", None)
+                    self.failures.append(
+                        f"{title} [.wav]: render did not appear within "
+                        f"{self.wav_timeout}s (last poll status {status})")
                 # Only a file on disk counts: a throttled or failed render must
                 # be retried next run, not recorded as done.
                 if os.path.exists(path) and os.path.getsize(path) > 0:

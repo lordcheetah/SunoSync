@@ -11,6 +11,7 @@ import pytest
 
 from core.archiver import (
     MANIFEST_SCHEMA,
+    ArchiveError,
     UNSORTED_FOLDER,
     Archiver,
     assign_folder_names,
@@ -339,3 +340,99 @@ class TestSameTitleCollisions:
         clips = {"a1": {"id": "a1", "title": "Same"}, "b2": {"id": "b2", "title": "Same"}}
         stems = assign_track_stems(clips, {})
         assert stems["a1"] != stems["b2"]
+
+
+class _FakeResponse:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    """Scripted responses, so auth handling can be tested without a network."""
+
+    def __init__(self, post_statuses, poll_responses):
+        self.post_statuses = list(post_statuses)
+        self.poll_responses = list(poll_responses)
+        self.posts = 0
+        self.polls = 0
+
+    def post(self, *_a, **_k):
+        self.posts += 1
+        status = self.post_statuses.pop(0) if self.post_statuses else 204
+        return _FakeResponse(status)
+
+    def get(self, *_a, **_k):
+        self.polls += 1
+        if self.poll_responses:
+            return self.poll_responses.pop(0)
+        return _FakeResponse(200, {})
+
+
+class TestWavAuthHandling:
+    """A 401 must abort loudly, not burn the whole timeout per track."""
+
+    def test_expired_token_raises_instead_of_timing_out(self, tmp_path):
+        session = _FakeSession([401], [])
+        archiver = Archiver("stale", str(tmp_path), delay=0, wav_timeout=1, session=session)
+        with pytest.raises(ArchiveError, match="rejected the token"):
+            archiver.request_wav_url("abc")
+        # The point of the fix: it must not sit polling.
+        assert session.polls == 0
+
+    def test_a_refreshed_token_lets_the_run_continue(self, tmp_path):
+        session = _FakeSession(
+            [401, 204],
+            [_FakeResponse(200, {"wav_file_url": "https://cdn1.suno.ai/x.wav"})],
+        )
+        archiver = Archiver(
+            "stale", str(tmp_path), delay=0, wav_timeout=5, session=session,
+            token_provider=lambda: "fresh-token",
+        )
+        assert archiver.request_wav_url("abc") == "https://cdn1.suno.ai/x.wav"
+        assert archiver.token == "fresh-token"
+        assert session.posts == 2
+
+    def test_rate_limit_aborts_with_a_clear_message(self, tmp_path):
+        session = _FakeSession([429], [])
+        archiver = Archiver("t", str(tmp_path), delay=0, wav_timeout=1, session=session)
+        with pytest.raises(ArchiveError, match="rate-limiting"):
+            archiver.request_wav_url("abc")
+
+    def test_real_payload_shape_is_understood(self, tmp_path):
+        # {} until the render lands, then {"wav_file_url": ...}
+        session = _FakeSession(
+            [204],
+            [_FakeResponse(200, {}),
+             _FakeResponse(200, {"wav_file_url": "https://cdn1.suno.ai/y.wav"})],
+        )
+        archiver = Archiver("t", str(tmp_path), delay=0, wav_timeout=20, session=session)
+        assert archiver.request_wav_url("abc") == "https://cdn1.suno.ai/y.wav"
+
+    def test_genuine_timeout_still_returns_none(self, tmp_path):
+        session = _FakeSession([204], [])
+        archiver = Archiver("t", str(tmp_path), delay=0, wav_timeout=1, session=session)
+        assert archiver.request_wav_url("abc") is None
+
+
+class TestTokenRefresh:
+    def test_no_provider_means_no_refresh(self, tmp_path):
+        assert Archiver("t", str(tmp_path)).refresh_token() is False
+
+    def test_identical_token_is_not_a_refresh(self, tmp_path):
+        archiver = Archiver("same", str(tmp_path), token_provider=lambda: "same")
+        assert archiver.refresh_token() is False
+
+    def test_new_token_is_adopted(self, tmp_path):
+        archiver = Archiver("old", str(tmp_path), token_provider=lambda: "new")
+        assert archiver.refresh_token() is True
+        assert archiver.token == "new"
+
+    def test_a_failing_provider_is_not_fatal(self, tmp_path):
+        def boom():
+            raise RuntimeError("config unreadable")
+        archiver = Archiver("old", str(tmp_path), token_provider=boom)
+        assert archiver.refresh_token() is False
