@@ -6,6 +6,7 @@ mistake in it means a track is silently missing from the archive.
 
 import json
 import os
+import time
 
 import pytest
 
@@ -377,6 +378,7 @@ class TestWavAuthHandling:
 
     def test_expired_token_raises_instead_of_timing_out(self, tmp_path):
         session = _FakeSession([401], [])
+        # No provider: nothing can refresh it, so it must fail fast.
         archiver = Archiver("stale", str(tmp_path), delay=0, wav_timeout=1, session=session)
         with pytest.raises(ArchiveError, match="rejected the token"):
             archiver.request_wav_url("abc")
@@ -392,6 +394,7 @@ class TestWavAuthHandling:
             "stale", str(tmp_path), delay=0, wav_timeout=5, session=session,
             token_provider=lambda: "fresh-token",
         )
+        # A 401 waits for the token to *change*, not for it to look healthy.
         assert archiver.request_wav_url("abc") == "https://cdn1.suno.ai/x.wav"
         assert archiver.token == "fresh-token"
         assert session.posts == 2
@@ -436,3 +439,60 @@ class TestTokenRefresh:
             raise RuntimeError("config unreadable")
         archiver = Archiver("old", str(tmp_path), token_provider=boom)
         assert archiver.refresh_token() is False
+
+
+class TestTokenLifetime:
+    """Session tokens are one-hour Clerk JWTs; a long run outlives several."""
+
+    @staticmethod
+    def _jwt(exp):
+        import base64
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        return f"header.{payload}.signature"
+
+    def test_reads_remaining_life(self):
+        from core.archiver import token_seconds_left
+        assert round(token_seconds_left(self._jwt(time.time() + 3600))) == 3600
+
+    def test_negative_when_expired(self):
+        from core.archiver import token_seconds_left
+        assert token_seconds_left(self._jwt(time.time() - 30)) < 0
+
+    @pytest.mark.parametrize("value", [None, "", "not-a-jwt", "a.b", 42, "a.!!!.c"])
+    def test_undecodable_returns_none(self, value):
+        from core.archiver import token_seconds_left
+        assert token_seconds_left(value) is None
+
+    def test_healthy_token_needs_no_wait(self, tmp_path):
+        archiver = Archiver(self._jwt(time.time() + 3600), str(tmp_path))
+        assert archiver.ensure_fresh_token() is True
+
+    def test_waits_and_adopts_a_refreshed_token(self, tmp_path):
+        fresh = self._jwt(time.time() + 3600)
+        archiver = Archiver(self._jwt(time.time() + 5), str(tmp_path),
+                            token_provider=lambda: fresh)
+        assert archiver.ensure_fresh_token(wait=5) is True
+        assert archiver.token == fresh
+
+    def test_gives_up_when_nothing_arrives(self, tmp_path):
+        stale = self._jwt(time.time() + 5)
+        archiver = Archiver(stale, str(tmp_path), token_provider=lambda: stale)
+        assert archiver.ensure_fresh_token(wait=0) is False
+
+    def test_unparseable_token_is_not_blocked(self, tmp_path):
+        """A token we cannot decode is left to the server to judge."""
+        assert Archiver("opaque-token", str(tmp_path)).ensure_fresh_token() is True
+
+
+class TestWaitForNewToken:
+    def test_no_provider_fails_immediately(self, tmp_path):
+        assert Archiver("t", str(tmp_path)).wait_for_new_token(wait=0) is False
+
+    def test_unchanged_token_times_out(self, tmp_path):
+        archiver = Archiver("same", str(tmp_path), token_provider=lambda: "same")
+        assert archiver.wait_for_new_token(wait=0) is False
+
+    def test_changed_token_is_adopted(self, tmp_path):
+        archiver = Archiver("old", str(tmp_path), token_provider=lambda: "new")
+        assert archiver.wait_for_new_token(wait=0) is True
+        assert archiver.token == "new"

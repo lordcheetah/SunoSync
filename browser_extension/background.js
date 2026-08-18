@@ -42,8 +42,23 @@ const REQUIRED_ORIGINS = [
  * covers sub-30s refreshes while the worker is alive.
  */
 const ALARM_FLOOR_MINUTES = 0.5;
-const REFRESH_LEAD_SECONDS = 15;   // Refresh this long before expiry.
 const FALLBACK_REFRESH_SECONDS = 45;
+
+/**
+ * Suno session tokens are Clerk JWTs valid for one hour (measured: exp - iat
+ * == 3600). An earlier version refreshed only 15 seconds before expiry, tuned
+ * for an assumed 60-second lifetime. That leaves no margin at all: overnight,
+ * a throttled alarm, a discarded tab or a sleeping machine is enough for the
+ * token to lapse, and anything relying on it then fails until a human
+ * intervenes.
+ *
+ * Refreshing at half the remaining life instead means a one-hour token is
+ * replaced after ~30 minutes, giving a full 30 minutes of slack, and the
+ * schedule self-corrects if a refresh is missed.
+ */
+const REFRESH_FRACTION = 0.5;
+const REFRESH_MAX_LEAD_SECONDS = 600;  // never wait longer than this before expiry
+const REFRESH_MIN_SECONDS = 30;
 
 // --- State ---
 let state = {
@@ -59,9 +74,9 @@ let shortTimer = null;
 
 // --- Persist & Load State ---
 function saveState() {
-    // The session JWT is deliberately NOT persisted. It lives for about a
-    // minute, and writing it to extension storage left a copy on disk long
-    // after it stopped being useful.
+    // The session JWT is deliberately NOT persisted. Writing an hour-long
+    // credential to extension storage leaves a copy on disk long after it is
+    // needed, and it is cheap to fetch a fresh one from the page.
     const { lastToken, ...persistable } = state;
     return api.storage.local.set({ sunosync_state: persistable });
 }
@@ -181,8 +196,12 @@ function scheduleSmartRefresh(token) {
     const claims = token ? parseJwt(token) : null;
     if (claims && claims.exp) {
         const timeToExpiry = claims.exp - Math.floor(Date.now() / 1000);
-        refreshInSeconds = Math.max(5, timeToExpiry - REFRESH_LEAD_SECONDS);
-        console.log(`[SunoSync] Token expires in ${timeToExpiry}s; refreshing in ${refreshInSeconds}s.`);
+        refreshInSeconds = Math.max(
+            REFRESH_MIN_SECONDS,
+            Math.min(timeToExpiry * REFRESH_FRACTION,
+                     timeToExpiry - REFRESH_MAX_LEAD_SECONDS)
+        );
+        console.log(`[SunoSync] Token expires in ${timeToExpiry}s; refreshing in ${Math.round(refreshInSeconds)}s.`);
     }
 
     // Short-horizon refresh via setTimeout, which is not subject to the alarm

@@ -26,6 +26,7 @@ throttled by Suno. ``--no-wav`` skips it.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -67,6 +68,30 @@ ESTIMATED_BYTES = {
 
 # Observed wall-clock for one WAV render request plus polling.
 WAV_RENDER_SECONDS = 17
+
+# Suno session tokens are Clerk JWTs with a one-hour lifetime (measured: exp -
+# iat == 3600). A long run therefore outlives several tokens and depends on the
+# browser extension pushing fresh ones into SunoSync's config.
+TOKEN_MIN_TTL_SECONDS = 180
+TOKEN_WAIT_SECONDS = 900
+
+
+def token_seconds_left(token, now=None):
+    """Seconds until this JWT expires, or None if it cannot be read.
+
+    Only the `exp` claim is decoded; the signature is not verified, which is
+    fine because the server is the thing that actually enforces it.
+    """
+    if not isinstance(token, str) or token.count(".") != 2:
+        return None
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        expiry = float(claims["exp"])
+    except Exception:
+        return None
+    return expiry - (now if now is not None else time.time())
 
 
 class ArchiveError(Exception):
@@ -313,6 +338,60 @@ class Archiver:
             return True
         return False
 
+    def ensure_fresh_token(self, min_ttl=TOKEN_MIN_TTL_SECONDS, wait=None):
+        """Make sure the token has life left, waiting for a new one if not.
+
+        Tokens last an hour, so an overnight run burns through several. The
+        extension pushes replacements into config on its own schedule, so the
+        right response to an expiring token is to wait a little, not to fail.
+        Returns False only when nothing fresh arrives within `wait`.
+        """
+        wait = TOKEN_WAIT_SECONDS if wait is None else wait
+        left = token_seconds_left(self.token)
+        if left is None or left > min_ttl:
+            return True
+
+        deadline = time.monotonic() + wait
+        warned = False
+        while time.monotonic() < deadline:
+            if self.refresh_token():
+                fresh = token_seconds_left(self.token)
+                if fresh is None or fresh > min_ttl:
+                    return True
+            if not warned:
+                logger.warning(
+                    "Session token expires in %.0fs. Waiting up to %.0f min for the "
+                    "browser extension to push a new one -- keep SunoSync open with "
+                    "a suno.com tab loaded.", max(0.0, left), wait / 60,
+                )
+                warned = True
+            time.sleep(10)
+
+        return False
+
+    def wait_for_new_token(self, wait=None):
+        """Block until a different token appears in config. False on timeout.
+
+        Used after a rejection, where the token is known bad whatever its `exp`
+        claim says -- so this waits for the value to change rather than for it
+        to look healthy.
+        """
+        wait = TOKEN_WAIT_SECONDS if wait is None else wait
+        if self._token_provider is None:
+            return False
+        deadline = time.monotonic() + wait
+        logger.warning(
+            "Session token was rejected. Waiting up to %.0f min for the browser "
+            "extension to push a new one -- keep SunoSync open with a suno.com "
+            "tab loaded.", wait / 60,
+        )
+        while True:
+            if self.refresh_token():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(10)
+
     def _throttle(self):
         """Keep a floor between API calls so the sweep stays polite."""
         if self.delay <= 0:
@@ -477,6 +556,15 @@ class Archiver:
         expired token that is 2 minutes wasted per track, and 607 tracks spent
         about 20 hours producing nothing but a misleading error.
         """
+        # Conversion plus a 68 MB download can outlast a token that is nearly
+        # spent, so top it up first rather than failing halfway.
+        if not self.ensure_fresh_token():
+            raise ArchiveError(
+                "The session token expired and no replacement arrived. Open "
+                "SunoSync, load a suno.com tab so the extension can refresh the "
+                "session, then re-run. Finished tracks are kept."
+            )
+
         self._throttle()
         try:
             response = self.session.post(
@@ -487,7 +575,7 @@ class Archiver:
             return None
 
         if response.status_code in (401, 403):
-            if not self.refresh_token():
+            if not (self.refresh_token() or self.wait_for_new_token()):
                 raise ArchiveError(
                     "Suno rejected the token while converting WAV (HTTP "
                     f"{response.status_code}). Session tokens expire in about a "
@@ -522,7 +610,7 @@ class Archiver:
                     if url:
                         return url
                 elif poll.status_code in (401, 403):
-                    if not self.refresh_token():
+                    if not (self.refresh_token() or self.wait_for_new_token()):
                         raise ArchiveError(
                             "Suno rejected the token while polling for WAV (HTTP "
                             f"{poll.status_code}). Re-run with SunoSync open so the "
