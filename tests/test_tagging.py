@@ -333,3 +333,77 @@ class TestCsvExport:
         summary = album_summary_row(plan, rows)
         assert summary["needs_review"] == "no"
         assert summary["album"] == "wAyfInders"
+
+
+class TestStyleFields:
+    """The four style-related fields are distinct and must not be conflated."""
+
+    CLIP = {
+        "id": "s1",
+        "title": "T",
+        "display_tags": "rock, synth, ambient",
+        "caption": "Prose written about the finished song.",
+        "metadata": {
+            "tags": "x" * 950,
+            "negative_tags": "slow, ballad",
+            "gpt_description_prompt": "hard rock, intense, gothic metal",
+            "persona_id": "b131d7e9-fc32-48ff-a1a7-ba8f33f7f0e1",
+            "prompt": "[Verse]\nwords",
+        },
+    }
+
+    def test_style_is_preserved_whole(self):
+        from core.tagging import clip_style
+        # Previously truncated to 900; the style prompt reaches ~1000 chars.
+        assert len(clip_style(self.CLIP)) == 950
+
+    def test_exclude_styles(self):
+        from core.tagging import clip_negative_style
+        assert clip_negative_style(self.CLIP) == "slow, ballad"
+
+    def test_description_prompt_is_not_the_caption(self):
+        from core.tagging import clip_caption, clip_description_prompt
+        assert clip_description_prompt(self.CLIP) == "hard rock, intense, gothic metal"
+        assert clip_caption(self.CLIP).startswith("Prose written")
+
+    def test_genre_stays_short_despite_a_long_style(self):
+        from core.tagging import clip_genre
+        assert clip_genre(self.CLIP) == "rock, synth, ambient"
+
+    @pytest.mark.parametrize("fn", ["clip_style", "clip_negative_style",
+                                    "clip_description_prompt"])
+    def test_absent_fields_yield_empty(self, fn):
+        import core.tagging as t
+        assert getattr(t, fn)({"metadata": {}}) == ""
+        assert getattr(t, fn)({}) == ""
+
+    def test_written_to_id3_without_truncation(self, tmp_path):
+        from core.tagging import build_album_plans, tag_audio_file
+        path = tmp_path / "T.mp3"
+        path.write_bytes(SILENT_MP3)
+        plan = build_album_plans([(PLAYLIST, [{"clip": self.CLIP, "relative_index": 1.0}])])[0]
+        assert tag_audio_file(str(path), plan.tracks[0])
+
+        frames = {f.desc: f.text[0] for f in ID3(str(path)).getall("TXXX")}
+        assert len(frames["SUNO_STYLE"]) == 950
+        assert frames["SUNO_STYLE_EXCLUDE"] == "slow, ballad"
+        assert frames["SUNO_PERSONA_ID"].startswith("b131d7e9")
+
+    def test_absent_style_frames_are_not_written(self, tmp_path):
+        from core.tagging import build_album_plans, tag_audio_file
+        path = tmp_path / "T.mp3"
+        path.write_bytes(SILENT_MP3)
+        bare = {"id": "b", "title": "T", "metadata": {}}
+        plan = build_album_plans([(PLAYLIST, [{"clip": bare, "relative_index": 1.0}])])[0]
+        tag_audio_file(str(path), plan.tracks[0])
+        descs = {f.desc for f in ID3(str(path)).getall("TXXX")}
+        assert "SUNO_STYLE_EXCLUDE" not in descs
+        assert "SUNO_ID" in descs
+
+    def test_csv_carries_all_style_columns(self):
+        from core.tagging import CSV_COLUMNS, build_album_plans, build_csv_rows
+        plan = build_album_plans([(PLAYLIST, [{"clip": self.CLIP, "relative_index": 1.0}])])[0]
+        row = build_csv_rows(plan, {})[0]
+        for column in ("style", "exclude_style", "description_prompt", "caption"):
+            assert column in CSV_COLUMNS
+            assert row[column]

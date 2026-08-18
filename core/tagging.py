@@ -50,7 +50,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ALBUM_INDEX_COLUMNS",
     "clip_caption",
+    "clip_description_prompt",
     "clip_genre",
+    "clip_negative_style",
+    "clip_style",
     "CSV_COLUMNS",
     "AlbumPlan",
     "TrackPlan",
@@ -80,6 +83,34 @@ def clip_caption(clip):
     """
     caption = clip.get("caption")
     return caption.strip() if isinstance(caption, str) else ""
+
+
+def clip_style(clip):
+    """The full 'Style of Music' prompt, verbatim.
+
+    ``metadata.tags`` is the style box from Suno's custom mode -- observed
+    between 289 and 1000 characters here. It is the recipe for the sound, so it
+    is preserved whole rather than trimmed; :func:`clip_genre` is what produces
+    the short browsable version.
+    """
+    tags = (clip.get("metadata") or {}).get("tags")
+    return tags.strip() if isinstance(tags, str) else ""
+
+
+def clip_negative_style(clip):
+    """The 'Exclude Styles' prompt, if one was used."""
+    value = (clip.get("metadata") or {}).get("negative_tags")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def clip_description_prompt(clip):
+    """The simple-mode song-description prompt, if the track was made that way.
+
+    Distinct from :func:`clip_caption`: this is the instruction given to Suno,
+    not prose written about the finished song.
+    """
+    value = (clip.get("metadata") or {}).get("gpt_description_prompt")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def clip_genre(clip, limit=3):
@@ -286,9 +317,17 @@ def tag_audio_file(path, track: TrackPlan, lyrics=None, overwrite=True):
     # recording. This is the role a MusicBrainz recording id would normally play.
     tags.delall("TXXX:SUNO_ID")
     tags.add(TXXX(encoding=3, desc="SUNO_ID", text=track.clip_id))
-    if metadata.get("tags"):
-        tags.delall("TXXX:SUNO_STYLE")
-        tags.add(TXXX(encoding=3, desc="SUNO_STYLE", text=str(metadata["tags"])[:900]))
+    # The style prompt runs to ~1000 characters and is the recipe for the
+    # sound, so it is kept whole rather than truncated as it was before.
+    for desc, value in (
+        ("SUNO_STYLE", clip_style(clip)),
+        ("SUNO_STYLE_EXCLUDE", clip_negative_style(clip)),
+        ("SUNO_DESCRIPTION_PROMPT", clip_description_prompt(clip)),
+        ("SUNO_PERSONA_ID", str(metadata.get("persona_id") or "")),
+    ):
+        tags.delall(f"TXXX:{desc}")
+        if value:
+            tags.add(TXXX(encoding=3, desc=desc, text=value[:4000]))
 
     if track.cover_bytes:
         tags.delall("APIC")
@@ -318,7 +357,8 @@ def format_duration(seconds):
 CSV_COLUMNS = [
     "track", "title", "duration", "year", "genre",
     "published", "wav_file", "mp3_file", "mp4_file",
-    "lyrics_file", "suno_id", "caption", "lyrics",
+    "lyrics_file", "suno_id", "caption", "style", "exclude_style",
+    "description_prompt", "lyrics",
 ]
 
 
@@ -347,6 +387,9 @@ def build_csv_rows(plan: AlbumPlan, files_by_clip, lyrics_by_clip=None):
             "lyrics_file": files.get(".txt", ""),
             "suno_id": track.clip_id,
             "caption": clip_caption(track.clip),
+            "style": clip_style(track.clip),
+            "exclude_style": clip_negative_style(track.clip),
+            "description_prompt": clip_description_prompt(track.clip),
             "lyrics": lyrics_by_clip.get(track.clip_id, ""),
         })
     return rows
