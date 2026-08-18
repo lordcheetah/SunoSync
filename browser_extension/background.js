@@ -34,6 +34,23 @@ const REQUIRED_ORIGINS = [
 ];
 
 /**
+ * Whether a fresh token should be fetched from the page.
+ *
+ * MV3 suspends the background worker aggressively, and the token is
+ * deliberately not persisted, so after a restart `state.lastToken` is null.
+ * Without this check nothing ever asked the page for a token again: the
+ * refresh alarm is only scheduled after a successful push, and a push needed a
+ * token we no longer had. The extension sat happily polling /status while
+ * never delivering anything -- exactly what the app's log showed.
+ */
+function tokenRefreshDue() {
+    if (!state.tokenExpiry) return true;          // nothing known -> fetch one
+    const now = Math.floor(Date.now() / 1000);
+    const remaining = state.tokenExpiry - now;
+    return remaining <= REFRESH_MAX_LEAD_SECONDS; // within 10 min of expiry
+}
+
+/**
  * Chrome and Firefox both clamp alarms to a 30 second floor. The previous
  * version asked for 5 second polling and 6 second refreshes and silently got
  * 30 seconds instead, which meant the "token is about to expire, refresh now"
@@ -64,6 +81,9 @@ const REFRESH_MIN_SECONDS = 30;
 let state = {
     lastToken: null,
     lastRefresh: null,
+    // Unix seconds. Persisted (unlike the token itself) so that after a worker
+    // restart we still know whether a refresh is due.
+    tokenExpiry: null,
     appConnected: false,
     sunoLoggedIn: false,
     paired: false,
@@ -165,6 +185,8 @@ async function pushTokenToApp(token) {
         if (response.ok) {
             state.appConnected = true;
             state.lastError = null;
+            const claims = parseJwt(token);
+            state.tokenExpiry = (claims && claims.exp) ? claims.exp : null;
             await saveState();
             updateBadge('connected');
             scheduleSmartRefresh(token);
@@ -236,6 +258,11 @@ async function checkAppStatus() {
             if (!wasConnected && state.lastToken) {
                 console.log('[SunoSync] App discovered; pushing cached token.');
                 pushTokenToApp(state.lastToken);
+            } else if (tokenRefreshDue()) {
+                // Runs every 30s off the poll alarm, so a stale or missing
+                // token self-heals without the page having to be reloaded.
+                console.log('[SunoSync] Token due; asking the suno.com tab for one.');
+                requestTokenRefresh();
             }
         } else {
             state.appConnected = false;
@@ -389,6 +416,7 @@ api.alarms.onAlarm.addListener((alarm) => {
 async function bootstrap() {
     await loadState();
     ensurePollAlarm();
+    // Not awaited: checkAppStatus itself now requests a token when one is due.
     checkAppStatus();
 }
 

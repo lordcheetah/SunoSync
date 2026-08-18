@@ -101,3 +101,39 @@ class TestSourceSafety:
     def test_background_sends_the_auth_header(self):
         source = (EXT_DIR / "background.js").read_text(encoding="utf-8")
         assert "X-SunoSync-Auth" in source
+
+
+class TestTokenPushDeadlock:
+    """The extension must never sit connected while never pushing a token.
+
+    MV3 suspends the worker and the JWT is not persisted, so after a restart
+    nothing had a token to push, and the refresh alarm was only scheduled after
+    a successful push. The app's log showed /status polling every 30s with not a
+    single POST /token.
+    """
+
+    @staticmethod
+    def _background():
+        return (EXT_DIR / "background.js").read_text(encoding="utf-8")
+
+    def test_poll_can_trigger_a_token_request(self):
+        source = self._background()
+        assert "tokenRefreshDue" in source
+        status = source[source.index("async function checkAppStatus"):]
+        status = status[: status.index("\n}")]
+        assert "requestTokenRefresh" in status, (
+            "checkAppStatus must be able to ask the page for a token, "
+            "otherwise a restarted worker never pushes again"
+        )
+
+    def test_expiry_is_persisted_but_the_token_is_not(self):
+        source = self._background()
+        assert "tokenExpiry" in source
+        # The credential itself must still be stripped before storage.
+        assert "const { lastToken, ...persistable } = state;" in source
+
+    def test_expiry_is_recorded_on_a_successful_push(self):
+        source = self._background()
+        push = source[source.index("async function pushTokenToApp"):]
+        push = push[: push.index("\n}")]
+        assert "state.tokenExpiry" in push
