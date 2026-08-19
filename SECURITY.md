@@ -56,9 +56,11 @@ the meantime:
   it, and
 * **Settings → Browser Bridge → Sign out** clears the stored token.
 
-Suno session tokens are short-lived (roughly a minute), so a leaked token is far
-less damaging than a leaked password. The browser extension deliberately does
-**not** persist the token to extension storage at all.
+Suno session tokens last exactly one hour (measured: the JWT's `exp` - `iat` is
+3600), so a leaked token is less damaging than a leaked password but not
+trivially so. The browser extension deliberately does **not** persist the token
+to extension storage; it keeps only the expiry timestamp, so that a restarted
+worker knows when to fetch a replacement.
 
 ## The client cookie
 
