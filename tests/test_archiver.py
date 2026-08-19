@@ -496,3 +496,60 @@ class TestWaitForNewToken:
         archiver = Archiver("old", str(tmp_path), token_provider=lambda: "new")
         assert archiver.wait_for_new_token(wait=0) is True
         assert archiver.token == "new"
+
+
+class TestBarrenRunDetection:
+    """A run that achieves nothing must say so, not look busy until morning.
+
+    The overnight WAV pass processed all 617 tracks, downloaded nothing because
+    the token had expired, and reported neither fact until it finished.
+    """
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, outcomes, max_barren=3):
+        """Drive the CLI loop with scripted per-track outcomes."""
+        import scripts.archive_library as cli
+
+        clips = {f"c{i}": {"id": f"c{i}", "title": f"T{i}"} for i in range(len(outcomes))}
+        calls = {"n": 0}
+
+        def fake_archive_clip(self, clip, folders, stem=None):
+            index = calls["n"]
+            calls["n"] += 1
+            return set(outcomes[index])
+
+        monkeypatch.setattr(Archiver, "archive_clip", fake_archive_clip)
+        monkeypatch.setattr(Archiver, "fetch_playlists", lambda self, **k: [])
+        monkeypatch.setattr(Archiver, "build_membership", lambda self, p: ({}, clips))
+        monkeypatch.setattr(Archiver, "fetch_public_clips", lambda self, **k: [])
+        monkeypatch.setattr(cli, "load_token", lambda explicit=None: "tok")
+
+        code = cli.main([
+            "--out", str(tmp_path), "--no-wav", "--no-video",
+            "--delay", "0", "--max-barren", str(max_barren),
+        ])
+        return code, calls["n"]
+
+    def test_stops_once_nothing_is_being_gained(self, monkeypatch, tmp_path):
+        # Every track returns nothing: the overnight failure mode.
+        code, processed = self._run(monkeypatch, tmp_path, [set()] * 50, max_barren=3)
+        assert code == 1, "a wholly unproductive run must fail, not report success"
+        assert processed <= 5, f"should have stopped early, processed {processed}"
+
+    def test_a_working_run_is_not_interrupted(self, monkeypatch, tmp_path):
+        full = {"mp3", "jpg", "txt"}
+        code, processed = self._run(monkeypatch, tmp_path, [full] * 12, max_barren=3)
+        assert code == 0
+        assert processed == 12
+
+    def test_occasional_failures_do_not_stop_a_healthy_run(self, monkeypatch, tmp_path):
+        full = {"mp3", "jpg", "txt"}
+        outcomes = [full, set(), full, set(), full, set(), full, full]
+        code, processed = self._run(monkeypatch, tmp_path, outcomes, max_barren=3)
+        assert code == 0, "isolated failures should not abort the run"
+        assert processed == len(outcomes)
+
+    def test_the_guard_can_be_disabled(self, monkeypatch, tmp_path):
+        code, processed = self._run(monkeypatch, tmp_path, [set()] * 6, max_barren=0)
+        assert code == 0
+        assert processed == 6

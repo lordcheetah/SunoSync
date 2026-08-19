@@ -97,6 +97,10 @@ def build_parser():
                         help="Stop after N tracks. Useful for a trial run.")
     parser.add_argument("--wav-timeout", type=int, default=120,
                         help="Seconds to wait for each WAV render (default: 120).")
+    parser.add_argument("--max-barren", type=int, default=15, metavar="N",
+                        help="Stop after N consecutive tracks that gain nothing "
+                             "(default: 15; 0 disables). Guards against a run that "
+                             "looks busy all night while downloading nothing.")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -200,19 +204,62 @@ def main(argv=None):
             pending = pending[: args.limit]
 
         total = len(pending)
+        barren = 0          # consecutive tracks that gained nothing
+        last_bytes = 0
+
         for index, clip_id in enumerate(pending, 1):
             clip = all_clips[clip_id]
             folders = plan_destinations(clip_id, membership)
-            log.info("[%d/%d] %s  ->  %s", index, total,
-                     (clip.get("title") or clip_id)[:45], ", ".join(folders))
+            title = (clip.get("title") or clip_id)[:45]
+            already = completed.get(clip_id, set())
+
+            log.info("[%d/%d] %s  ->  %s", index, total, title, ", ".join(folders))
             try:
                 secured = archiver.archive_clip(clip, folders, stem=stems.get(clip_id))
-                completed[clip_id] = completed.get(clip_id, set()) | secured
+                completed[clip_id] = already | secured
             except ArchiveError:
                 raise
             except Exception as exc:
-                log.warning("  track failed: %s", exc)
+                log.warning("   track failed: %s", exc)
                 archiver.failures.append(f"{clip_id}: {exc}")
+                secured = set()
+                completed[clip_id] = already
+
+            # Report the outcome, not just the attempt. Logging only the
+            # "[n/m] title" line before the work made a run that downloaded
+            # nothing all night look identical to one that was working.
+            gained = secured - already
+            missing = sorted(wanted - completed[clip_id])
+            if gained:
+                log.info("   got %s%s", "+".join(sorted(gained)),
+                         f", still missing {'+'.join(missing)}" if missing else "")
+            elif missing:
+                log.warning("   nothing new; still missing %s", "+".join(missing))
+
+            if gained:
+                barren = 0
+            elif missing:
+                barren += 1
+                if args.max_barren and barren >= args.max_barren:
+                    raise ArchiveError(
+                        f"{barren} tracks in a row produced nothing (still missing "
+                        f"{'+'.join(missing)}). Stopping rather than running on "
+                        "achieving nothing -- see archive_failures.txt. Re-run once "
+                        "the cause is fixed; finished work is kept."
+                    )
+            else:
+                barren = 0
+
+            if index % 25 == 0 or index == total:
+                stats = archiver.stats
+                log.info(
+                    "-- progress %d/%d: %d files, %s downloaded this run, %d failures --",
+                    index, total, stats["downloaded"],
+                    human_bytes(stats["bytes"]), stats["failed"],
+                )
+                if stats["bytes"] == last_bytes and stats["downloaded"]:
+                    log.warning("-- no new data since the last checkpoint --")
+                last_bytes = stats["bytes"]
 
             if index % 10 == 0:
                 archiver.save_manifest(completed)
