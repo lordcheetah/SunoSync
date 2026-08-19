@@ -183,6 +183,19 @@ def main(argv=None):
             log.info("Resuming: %d of %d tracks already have %s.",
                      len(all_clips) - len(pending), len(all_clips),
                      "+".join(sorted(wanted)))
+            # A single "N of M complete" figure hides which asset is actually
+            # behind: with MP3s finished and WAVs barely started, both look the
+            # same from that number alone.
+            print()
+            print("  Still to collect:")
+            for kind in sorted(wanted):
+                missing = sum(1 for cid in all_clips
+                              if kind not in completed.get(cid, set()))
+                have = len(all_clips) - missing
+                bar = "#" * int(28 * have / max(1, len(all_clips)))
+                print(f"    {kind:4s} {have:4d}/{len(all_clips):<4d} "
+                      f"{bar:<28s} {missing:4d} to go")
+            print()
         if args.limit:
             pending = pending[: args.limit]
 
