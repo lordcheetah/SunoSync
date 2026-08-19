@@ -113,3 +113,72 @@ class TestDegradedBackends:
         monkeypatch.setattr(secrets, "_keyring", lambda: None)
         monkeypatch.setenv(secrets.COOKIE_ENV_VAR, "env-only")
         assert secrets.get_client_cookie() == "env-only"
+
+
+class TestBrowserCookieImport:
+    """Reading the cookie from a Firefox-family profile, so no DevTools needed."""
+
+    @staticmethod
+    def _make_profile(tmp_path, rows):
+        import sqlite3
+
+        path = tmp_path / "cookies.sqlite"
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE moz_cookies (id INTEGER, name TEXT, value TEXT, host TEXT)")
+        con.executemany("INSERT INTO moz_cookies (name, value, host) VALUES (?, ?, ?)", rows)
+        con.commit()
+        con.close()
+        return str(path)
+
+    def test_reads_the_clerk_scoped_cookie(self, tmp_path):
+        from core.browser_cookies import read_client_cookie
+
+        path = self._make_profile(tmp_path, [("__client", "the-value", "auth.suno.com")])
+        assert read_client_cookie(path) == "the-value"
+
+    def test_prefers_auth_host_over_others(self, tmp_path):
+        """The cookie lives on auth.suno.com, not suno.com."""
+        from core.browser_cookies import read_client_cookie
+
+        path = self._make_profile(tmp_path, [
+            ("__client", "wrong", ".suno.com"),
+            ("__client", "right", "auth.suno.com"),
+        ])
+        assert read_client_cookie(path) == "right"
+
+    def test_ignores_other_cookies(self, tmp_path):
+        from core.browser_cookies import read_client_cookie
+
+        path = self._make_profile(tmp_path, [
+            ("__client_uat", "nope", "auth.suno.com"),
+            ("session", "nope", "auth.suno.com"),
+        ])
+        assert read_client_cookie(path) is None
+
+    def test_empty_profile(self, tmp_path):
+        from core.browser_cookies import read_client_cookie
+
+        assert read_client_cookie(self._make_profile(tmp_path, [])) is None
+
+    def test_unreadable_database_raises(self, tmp_path):
+        from core.browser_cookies import BrowserCookieError, read_client_cookie
+
+        bad = tmp_path / "cookies.sqlite"
+        bad.write_bytes(b"this is not a database")
+        with pytest.raises(BrowserCookieError):
+            read_client_cookie(str(bad))
+
+    def test_a_locked_database_is_copied_not_opened(self, tmp_path):
+        """The browser holds a lock, so reading must work on a snapshot."""
+        import sqlite3
+
+        from core.browser_cookies import read_client_cookie
+
+        path = self._make_profile(tmp_path, [("__client", "v", "auth.suno.com")])
+        holder = sqlite3.connect(path)
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            assert read_client_cookie(path) == "v"
+        finally:
+            holder.rollback()
+            holder.close()

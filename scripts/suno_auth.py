@@ -10,7 +10,10 @@ The ``__client`` cookie is the longer-lived credential the browser itself uses
 to mint those tokens. Stored once in Windows Credential Manager, the archiver
 can mint its own and needs no browser at all.
 
-    # Store it (prompts without echoing):
+    # Easiest: read it straight out of your browser profile.
+    python scripts/suno_auth.py import
+
+    # Or paste it yourself (prompts without echoing):
     python scripts/suno_auth.py set
 
     # Check it still works:
@@ -19,10 +22,13 @@ can mint its own and needs no browser at all.
     # Remove it:
     python scripts/suno_auth.py clear
 
-To find the cookie: open suno.com while signed in, then DevTools ->
-Application/Storage -> Cookies -> https://suno.com -> copy the value of
-``__client``. Treat it like a password: it can mint session tokens until it
-expires or you sign out.
+``import`` handles this for you by reading the cookie out of Zen, Firefox,
+LibreWolf or Waterfox. To do it by hand instead: open suno.com while signed in,
+press Shift+F9 for the Storage inspector, and copy ``__client`` under
+**https://auth.suno.com** -- note it is scoped to auth.suno.com, not suno.com.
+
+Treat the cookie like a password: it can mint session tokens until it expires
+or you sign out.
 """
 
 from __future__ import annotations
@@ -35,6 +41,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.browser_cookies import (  # noqa: E402
+    BrowserCookieError,
+    find_profiles,
+    read_client_cookie,
+)
 from core.clerk import ClerkAuthError, mint_session_token, session_id_from_token  # noqa: E402
 from core.config_manager import ConfigManager  # noqa: E402
 from core.secrets import (  # noqa: E402
@@ -72,8 +83,11 @@ def cmd_set(_args):
         )
         return 2
 
-    print(__doc__.split("To find the cookie:")[1].strip())
-    print()
+    print(
+        "Open suno.com while signed in, press Shift+F9 for the Storage inspector,\n"
+        "and copy the __client value under https://auth.suno.com.\n"
+        "(Or let 'import' read it from your browser profile automatically.)\n"
+    )
     cookie = getpass.getpass("Paste the __client cookie (input hidden): ").strip()
     if not cookie:
         log.error("Nothing entered.")
@@ -95,6 +109,42 @@ def cmd_set(_args):
     print(f"Stored in Windows Credential Manager. Minted a token: {_describe(token)}.")
     print("Long runs will now mint their own tokens and need no browser.")
     return 0
+
+
+def cmd_import(_args):
+    profiles = find_profiles()
+    if not profiles:
+        log.error("No Firefox-family browser profile found. Use 'set' to paste it instead.")
+        return 2
+
+    print(f"Found {len(profiles)} profile(s); trying most recently used first.\n")
+    known = _known_token()
+
+    for browser, name, path in profiles:
+        try:
+            cookie = read_client_cookie(path)
+        except BrowserCookieError as exc:
+            print(f"  {browser:10s} {name[:28]:30s} unreadable ({exc})")
+            continue
+        if not cookie:
+            print(f"  {browser:10s} {name[:28]:30s} no {'__client'} cookie")
+            continue
+
+        print(f"  {browser:10s} {name[:28]:30s} found ({len(cookie)} chars) - validating...")
+        try:
+            token = mint_session_token(cookie, known_token=known)
+        except ClerkAuthError as exc:
+            print(f"      rejected: {exc}")
+            continue
+
+        if not set_client_cookie(cookie):
+            return 1
+        print(f"\nStored from {browser}. Minted a token: {_describe(token)}.")
+        print("Long runs will now mint their own tokens and need no browser.")
+        return 0
+
+    log.error("No usable cookie found. Sign in to suno.com, then try again.")
+    return 1
 
 
 def cmd_test(_args):
@@ -127,6 +177,9 @@ def main(argv=None):
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("set", help="Store the __client cookie (validated first).").set_defaults(fn=cmd_set)
+    sub.add_parser(
+        "import", help="Read the cookie from Zen/Firefox and store it."
+    ).set_defaults(fn=cmd_import)
     sub.add_parser("test", help="Mint a token to confirm the cookie works.").set_defaults(fn=cmd_test)
     sub.add_parser("clear", help="Remove the stored cookie.").set_defaults(fn=cmd_clear)
 

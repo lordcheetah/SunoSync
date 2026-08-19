@@ -69,8 +69,9 @@ normally means keeping a browser and the SunoSync extension running, which does
 not survive an unattended overnight run: Firefox and Zen unload temporary
 add-ons, and the archiver is then left holding an expired token.
 
-`scripts/suno_auth.py` optionally stores the `__client` cookie so the archiver
-can mint its own tokens directly:
+`scripts/suno_auth.py import` reads the `__client` cookie out of your Zen,
+Firefox, LibreWolf or Waterfox profile and stores it, so the archiver can mint
+its own tokens directly:
 
     POST https://auth.suno.com/v1/client/sessions/{session_id}/tokens
 
@@ -80,6 +81,11 @@ the session is signed out. It is therefore stored in the OS keystore -- Windows
 Credential Manager, via `keyring` -- and never written to `config.json`, so it
 does not end up in a folder backup or a cloud-synced directory alongside the
 rest of the app's state.
+
+The cookie is read from a copy of the browser's `cookies.sqlite`, taken because
+a running browser holds a lock on the original. The copy is deleted immediately
+afterwards, and the value is never logged. Note it is scoped to
+`auth.suno.com` -- Suno's Clerk instance -- rather than to `suno.com`.
 
 It is optional. Without it, the archiver falls back to whatever token the
 extension last pushed, and long runs need the app and a suno.com tab kept
