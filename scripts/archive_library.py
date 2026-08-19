@@ -16,8 +16,13 @@ Safe to interrupt: re-running skips anything already on disk.
     # Skip WAV (much faster; WAV needs a server-side render per track)
     python scripts/archive_library.py --out G:/SunoArchive --no-wav
 
-The token is read from SunoSync's config, so make sure the app has a fresh
-session (open it and let the browser extension sync) before a long run.
+Tokens last one hour. For an unattended run, store the Suno client cookie once
+so the archiver can mint its own and needs no browser at all:
+
+    python scripts/suno_auth.py set
+
+Without that it falls back to whatever token SunoSync's extension last pushed,
+which means keeping the app and a suno.com tab alive for the whole run.
 """
 
 from __future__ import annotations
@@ -40,15 +45,39 @@ from core.archiver import (  # noqa: E402
     human_bytes,
     plan_destinations,
 )
+from core.clerk import ClerkAuthError, mint_session_token  # noqa: E402
 from core.config_manager import ConfigManager  # noqa: E402
+from core.secrets import get_client_cookie  # noqa: E402
 
 
-def load_token(explicit=None):
-    if explicit:
-        return explicit.strip()
+def config_token():
+    """The token SunoSync's browser extension last pushed, if any."""
     token = (ConfigManager("config.json").get("token") or "").strip()
     # Copy-pasted tokens sometimes carry a stray ellipsis or NBSP.
     return re.sub(r"[^\x00-\x7F]+", "", token)
+
+
+def load_token(explicit=None):
+    """A usable session token, preferring one we can mint ourselves.
+
+    Minting from the stored client cookie is what makes an unattended run
+    possible: tokens last an hour, and the browser extension that would
+    otherwise refresh them does not survive overnight in Firefox or Zen, where
+    temporary add-ons are unloaded.
+    """
+    if explicit:
+        return explicit.strip()
+
+    cookie = get_client_cookie()
+    if cookie:
+        try:
+            return mint_session_token(cookie, known_token=config_token())
+        except ClerkAuthError as exc:
+            log = logging.getLogger("archive")
+            log.warning("Could not mint a token from the stored cookie: %s", exc)
+            log.warning("Falling back to the token in config.")
+
+    return config_token()
 
 
 def build_parser():

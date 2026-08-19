@@ -35,6 +35,7 @@ Everything lives in your per-user application data directory
 | File | Contents |
 | --- | --- |
 | `config.json` | Settings **and your Suno session token**, in plain text |
+| Windows Credential Manager | The Suno `__client` cookie, if stored (see below) |
 | `token_bridge.json` | The pairing secret for the browser extension |
 | `library_cache.json` | Scanned metadata about your local library |
 | `tags.json` | Your Like/Star/Trash tags |
@@ -58,6 +59,33 @@ the meantime:
 Suno session tokens are short-lived (roughly a minute), so a leaked token is far
 less damaging than a leaked password. The browser extension deliberately does
 **not** persist the token to extension storage at all.
+
+## The client cookie
+
+Session tokens are Clerk JWTs valid for exactly one hour. Keeping one fresh
+normally means keeping a browser and the SunoSync extension running, which does
+not survive an unattended overnight run: Firefox and Zen unload temporary
+add-ons, and the archiver is then left holding an expired token.
+
+`scripts/suno_auth.py` optionally stores the `__client` cookie so the archiver
+can mint its own tokens directly:
+
+    POST https://auth.suno.com/v1/client/sessions/{session_id}/tokens
+
+**The cookie is a more powerful credential than the token it replaces.** The
+token expires in an hour; the cookie can mint fresh tokens until it expires or
+the session is signed out. It is therefore stored in the OS keystore -- Windows
+Credential Manager, via `keyring` -- and never written to `config.json`, so it
+does not end up in a folder backup or a cloud-synced directory alongside the
+rest of the app's state.
+
+It is optional. Without it, the archiver falls back to whatever token the
+extension last pushed, and long runs need the app and a suno.com tab kept
+alive. To remove it: `python scripts/suno_auth.py clear`, or sign out of
+suno.com, which invalidates it server-side.
+
+`SUNOSYNC_CLIENT_COOKIE` overrides the keystore for a single run and persists
+nothing.
 
 ## The local token bridge
 

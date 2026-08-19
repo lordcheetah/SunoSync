@@ -13,6 +13,10 @@ pypresence==4.6.1
 sentry-sdk==2.55.0
 pynput==1.8.1
 
+# OS keystore for the Suno client cookie (core/secrets.py). Windows
+# Credential Manager on this platform.
+keyring==25.6.0
+
 # Windows only: required by core.utils.copy_files_to_clipboard for CF_HDROP.
 pywin32==311; sys_platform == "win32"
 
